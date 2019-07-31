@@ -13,6 +13,12 @@ pub struct Service {
     scheduler: Scheduler<Task>,
 }
 
+impl Service {
+    pub fn new(scheduler: Scheduler<Task>) -> Service {
+        Service { scheduler }
+    }
+}
+
 impl Backup for Service {
     fn backup(
         &mut self,
