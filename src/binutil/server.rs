@@ -259,6 +259,8 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
         Some(engines.clone()),
         Some(import_service),
         deadlock_service,
+        None,
+        None,
     )
     .unwrap_or_else(|e| fatal!("failed to create server: {}", e));
     let trans = server.transport();

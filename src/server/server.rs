@@ -77,6 +77,8 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver + 'static> Server<T, S> {
         debug_engines: Option<Engines>,
         import_service: Option<ImportSSTService<T>>,
         deadlock_service: Option<DeadlockService>,
+        env: Option<Arc<Environment>>,
+        server_builder: Option<ServerBuilder>,
     ) -> Result<Self> {
         // A helper thread (or pool) for transport layer.
         let stats_pool = ThreadPoolBuilder::new()
@@ -85,12 +87,14 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver + 'static> Server<T, S> {
             .build();
         let thread_load = Arc::new(ThreadLoad::with_threshold(cfg.heavy_load_threshold));
 
-        let env = Arc::new(
-            EnvBuilder::new()
-                .cq_count(cfg.grpc_concurrency)
-                .name_prefix(thd_name!(GRPC_THREAD_PREFIX))
-                .build(),
-        );
+        let env = env.unwrap_or_else(|| {
+            Arc::new(
+                EnvBuilder::new()
+                    .cq_count(cfg.grpc_concurrency)
+                    .name_prefix(thd_name!(GRPC_THREAD_PREFIX))
+                    .build(),
+            )
+        });
         let snap_worker = Worker::new("snap-handler");
 
         let kv_service = KvService::new(
@@ -111,7 +115,8 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver + 'static> Server<T, S> {
             .http2_max_ping_strikes(i32::MAX) // For pings without data from clients.
             .build_args();
         let builder_or_server = {
-            let mut sb = ServerBuilder::new(Arc::clone(&env))
+            let mut sb = server_builder
+                .unwrap_or_else(|| ServerBuilder::new(Arc::clone(&env)))
                 .channel_args(channel_args)
                 .register_service(create_tikv(kv_service));
             sb = security_mgr.bind(sb, &ip, addr.port());
