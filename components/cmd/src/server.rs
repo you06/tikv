@@ -50,7 +50,7 @@ pub fn run_tikv(mut config: TiKvConfig) {
     // It is okay to use the config w/o `validate()`,
     // because `initial_logger()` handles various conditions.
     initial_logger(&config);
-    tikv_util::set_panic_hook(false, &config.storage.data_dir);
+    tikv_util::set_panic_hook(true, &config.storage.data_dir);
 
     // Print version information.
     super::log_tikv_info();

@@ -175,6 +175,8 @@ impl Simulator for ServerCluster {
                 Some(engines.clone()),
                 Some(import_service.clone()),
                 None,
+                None,
+                None,
             ));
             match server {
                 Some(Ok(_)) => break,

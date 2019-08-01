@@ -20,6 +20,7 @@ impl Service {
 }
 
 impl Backup for Service {
+    // TODO: should we make it a server streaming?
     fn backup(
         &mut self,
         ctx: RpcContext,
@@ -29,19 +30,33 @@ impl Backup for Service {
         let scheduler = self.scheduler.clone();
         // TODO: make it a bounded channel.
         let (tx, rx) = mpsc::unbounded();
-        let send_resp = sink.send_all(rx.then(|resp| match resp {
-            Ok(resp) => Ok((resp, WriteFlags::default())),
-            Err(e) => {
-                error!("backup send failed"; "error" => ?e);
-                Err(Error::RpcFailure(RpcStatus::new(
-                    RpcStatusCode::GRPC_STATUS_UNKNOWN,
-                    Some(format!("{:?}", e)),
-                )))
-            }
-        }));
-        ctx.spawn(send_resp.map(|_s /* the sink */| ()).map_err(|e| {
-            error!("backup send failed"; "error" => ?e);
-        }));
+        let send_resp = sink.send_all(
+            rx.take_while(|resp: &Option<_>| {
+                // Close the stream once resp is None.
+                // TODO: test whether it can close a stream by None.
+                Ok(resp.is_some())
+            })
+            .filter_map(|resp| resp)
+            .then(|resp| match resp {
+                Ok(resp) => Ok((resp, WriteFlags::default())),
+                Err(e) => {
+                    error!("backup send failed"; "error" => ?e);
+                    Err(Error::RpcFailure(RpcStatus::new(
+                        RpcStatusCode::GRPC_STATUS_UNKNOWN,
+                        Some(format!("{:?}", e)),
+                    )))
+                }
+            }),
+        );
+        ctx.spawn(
+            send_resp
+                .map(|_s /* the sink */| {
+                    info!("backup send half closed");
+                })
+                .map_err(|e| {
+                    error!("backup send failed"; "error" => ?e);
+                }),
+        );
         ctx.spawn(
             stream
                 .for_each(move |req| {
@@ -53,6 +68,9 @@ impl Backup for Service {
                             Some(format!("{:?}", e)),
                         ))
                     })
+                })
+                .map(|_s| {
+                    info!("backup recv half closed");
                 })
                 .map_err(|e| {
                     error!("backup schedule failed"; "error" => ?e);
