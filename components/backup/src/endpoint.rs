@@ -16,7 +16,7 @@ use tikv::storage::kv::{
     Engine, Error as EngineError, RegionInfoProvider, ScanMode, StatisticsSummary,
 };
 use tikv::storage::txn::{EntryBatch, Error as TxnError, Msg, Scanner, SnapshotStore, Store};
-use tikv::storage::Key;
+use tikv::storage::{Key, Statistics};
 use tikv_util::worker::{Runnable, RunnableWithTimer};
 use tokio_threadpool::ThreadPool;
 
@@ -201,7 +201,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
         brange: BackupRange,
         start_ts: u64,
         end_ts: u64,
-        tx: mpsc::Sender<Result<BackupRange, TxnError>>,
+        tx: mpsc::Sender<Result<(BackupRange, Statistics), TxnError>>,
     ) {
         // TODO: support incremental backup
         let _ = start_ts;
@@ -224,13 +224,11 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
             let end_key = brange.end_key.clone();
             let mut scanner = snap_store.entry_scanner(start_key, end_key).unwrap();
             let mut batch = EntryBatch::with_capacity(1024);
-            let mut res = Ok(brange);
             loop {
                 if let Err(e) = scanner.scan_entries(&mut batch) {
                     // TODO: handle error
                     error!("backup scan error"; "error" => ?e);
-                    res = Err(e);
-                    break;
+                    return tx.send(Err(e)).map_err(|_| ());
                 };
                 if batch.len() == 0 {
                     break;
@@ -240,8 +238,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                 batch.clear();
             }
             let stat = scanner.take_statistics();
-            info!("backup scan details"; "details" => ?stat);
-            tx.send(res).map_err(|_| ())
+            tx.send(Ok((brange, stat))).map_err(|_| ())
         }));
     }
 
@@ -274,13 +271,16 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
 
         // Drop the extra sender so that for loop does not hang up.
         drop(res_tx);
+        let mut total_stat = Statistics::default();
         for res in res_rx {
             match res {
-                Ok(brange) => {
+                Ok((brange, stat)) => {
                     info!("backup region finish";
                         "region" => ?brange.region,
                         "start_key" => ?brange.start_key,
-                        "end_key" => ?brange.end_key);
+                        "end_key" => ?brange.end_key,
+                        "details" => ?stat);
+                    total_stat.add(&stat);
                     let start_key = brange
                         .start_key
                         .map_or_else(|| vec![], |k| k.into_raw().unwrap());
@@ -295,8 +295,10 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                 Err(e) => error!("backup region failed"; "error" => ?e),
             }
         }
+        info!("backup finished";
+            "take" => ?start.elapsed(),
+            "detail" => ?total_stat);
         resp.unbounded_send(None).unwrap();
-        info!("backup finished"; "take" => ?start.elapsed());
     }
 }
 
@@ -335,7 +337,8 @@ fn key_from_region(region: &Region) -> (Option<Key>, Option<Key>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::Future;
+    use futures::sync::mpsc::unbounded;
+    use futures::{Future, Stream};
     use kvproto::metapb;
     use std::collections::BTreeMap;
     use std::sync::mpsc::{channel, Receiver, Sender};

@@ -384,6 +384,7 @@ mod tests {
     use super::*;
     use crate::storage::mvcc::tests::*;
     use crate::storage::{Engine, Key, TestEngineBuilder};
+    use crate::storage::txn::Scanner;
 
     use kvproto::kvrpcpb::Context;
 
