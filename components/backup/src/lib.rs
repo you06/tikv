@@ -22,6 +22,8 @@ extern crate slog_global;
 
 mod endpoint;
 mod service;
+mod storage;
 
 pub use endpoint::{Endpoint, Task};
 pub use service::Service;
+pub use storage::{LocalStorage, Storage};
