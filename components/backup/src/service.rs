@@ -59,15 +59,21 @@ impl Backup for Service {
         );
         ctx.spawn(
             stream
-                .for_each(move |req| {
-                    let task = Task::new(req, tx.clone());
-                    scheduler.schedule(task).map_err(|e| {
+                .for_each(move |req| match Task::new(req, tx.clone()) {
+                    Ok(task) => scheduler.schedule(task).map_err(|e| {
                         error!("backup schedule failed"; "error" => ?e);
                         Error::RpcFailure(RpcStatus::new(
                             RpcStatusCode::GRPC_STATUS_UNKNOWN,
                             Some(format!("{:?}", e)),
                         ))
-                    })
+                    }),
+                    Err(e) => {
+                        error!("backup task initiate failed"; "error" => ?e);
+                        Err(Error::RpcFailure(RpcStatus::new(
+                            RpcStatusCode::GRPC_STATUS_UNKNOWN,
+                            Some(format!("{:?}", e)),
+                        )))
+                    }
                 })
                 .map(|_s| {
                     info!("backup recv half closed");
