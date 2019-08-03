@@ -108,6 +108,10 @@ impl EntryBatch {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    pub fn drain(&mut self) -> std::vec::Drain<'_, TxnEntry> {
+        self.entries.drain(..)
+    }
 }
 
 pub struct SnapshotStore<S: Snapshot> {
