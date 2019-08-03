@@ -55,6 +55,11 @@ quick_error! {
             description(err.description())
             display("{}", err)
         }
+        Rocks(err: String) {
+            from()
+            description("Rocksdb error")
+            display("{}", err)
+        }
         Io(err: IoError) {
             from()
             cause(err)

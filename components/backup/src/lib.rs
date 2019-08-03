@@ -26,8 +26,10 @@ mod endpoint;
 mod errors;
 mod service;
 mod storage;
+mod writer;
 
 pub use endpoint::{Endpoint, Task};
 pub use errors::{Error, Result};
 pub use service::Service;
 pub use storage::{create_storage, LocalStorage, Storage};
+pub use writer::BackupWriter;
