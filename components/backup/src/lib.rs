@@ -19,11 +19,15 @@
 extern crate slog;
 #[macro_use]
 extern crate slog_global;
+#[macro_use]
+extern crate quick_error;
 
 mod endpoint;
+mod errors;
 mod service;
 mod storage;
 
 pub use endpoint::{Endpoint, Task};
+pub use errors::{Error, Result};
 pub use service::Service;
-pub use storage::{LocalStorage, Storage};
+pub use storage::{create_storage, LocalStorage, Storage};
