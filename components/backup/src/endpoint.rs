@@ -30,7 +30,7 @@ pub struct Task {
     end_ts: u64,
 
     storage: Arc<dyn Storage>,
-    resp: UnboundedSender<Option<BackupResponse>>,
+    resp: UnboundedSender<BackupResponse>,
 }
 
 impl fmt::Display for Task {
@@ -50,7 +50,7 @@ impl fmt::Debug for Task {
 }
 
 impl Task {
-    pub fn new(req: BackupRequest, resp: UnboundedSender<Option<BackupResponse>>) -> Result<Task> {
+    pub fn new(req: BackupRequest, resp: UnboundedSender<BackupResponse>) -> Result<Task> {
         let start_key = req.get_start_key().to_owned();
         let end_key = req.get_end_key().to_owned();
         let start_ts = req.get_start_version();
@@ -277,7 +277,6 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                         file.set_end_version(task.end_ts);
                     }
                     response.set_files(files.into());
-                    resp.unbounded_send(Some(response)).unwrap();
                 }
                 Err(e) => {
                     error!("backup region failed";
@@ -286,14 +285,16 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                         "end_key" => hex::encode_upper(response.get_end_key()),
                         "error" => ?e);
                     response.set_error(e.into());
-                    resp.unbounded_send(Some(response)).unwrap();
                 }
+            }
+            if let Err(e) = resp.unbounded_send(response) {
+                error!("backup failed to send response"; "error" => ?e);
+                break;
             }
         }
         info!("backup finished";
             "take" => ?start.elapsed(),
             "summary" => ?summary);
-        resp.unbounded_send(None).unwrap();
     }
 }
 
@@ -305,7 +306,6 @@ impl<E: Engine, R: RegionInfoProvider> Runnable<Task> for Endpoint<E, R> {
         } else {
             // TODO: support incremental backup
             error!("incremental backup is not supported yet");
-            task.resp.unbounded_send(None).unwrap();
         }
     }
 }
@@ -470,7 +470,7 @@ mod tests {
             endpoint.handle_backup_task(task);
             let resps: Vec<_> = rx.collect().wait().unwrap();
             let mut counter = 0;
-            for a in resps.iter().filter_map(Option::as_ref) {
+            for a in &resps {
                 counter += 1;
                 assert!(
                     expect
@@ -512,7 +512,7 @@ mod tests {
     use tikv::storage::SHORT_VALUE_MAX_LEN;
     #[test]
     fn test_handle_backup_task() {
-        let (tmp, mut endpoint) = new_endpoint();
+        let (tmp, endpoint) = new_endpoint();
         let engine = endpoint.engine.clone();
 
         endpoint
@@ -559,10 +559,10 @@ mod tests {
                 "local://{}",
                 tmp.path().join(format!("{}", ts)).display()
             ));
-            let task = Task::new(req, tx.clone()).unwrap();
+            let task = Task::new(req, tx).unwrap();
             endpoint.handle_backup_task(task);
             let (resp, rx) = rx.into_future().wait().unwrap();
-            let resp = resp.unwrap().unwrap();
+            let resp = resp.unwrap();
             assert!(!resp.has_error(), "{:?}", resp);
             let file_len = if *len <= SHORT_VALUE_MAX_LEN { 1 } else { 2 };
             assert_eq!(
@@ -571,8 +571,11 @@ mod tests {
                 "{:?}",
                 resp
             );
-            let (none, rx) = rx.into_future().wait().unwrap();
-            assert!(none.as_ref().unwrap().is_none(), "{:?}", none);
+            let (none, _rx) = rx.into_future().wait().unwrap();
+            assert!(none.is_none(), "{:?}", none);
         }
     }
+
+// TODO: test region error and mvcc/txn error
+// TODO: test remote stop
 }

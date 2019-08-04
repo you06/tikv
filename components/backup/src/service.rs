@@ -24,30 +24,40 @@ impl Backup for Service {
     fn backup(
         &mut self,
         ctx: RpcContext,
-        stream: RequestStream<BackupRequest>,
-        sink: DuplexSink<BackupResponse>,
+        req: BackupRequest,
+        sink: ServerStreamingSink<BackupResponse>,
     ) {
-        let scheduler = self.scheduler.clone();
         // TODO: make it a bounded channel.
         let (tx, rx) = mpsc::unbounded();
-        let send_resp = sink.send_all(
-            rx.take_while(|resp: &Option<_>| {
-                // Close the stream once resp is None.
-                // TODO: test whether it can close a stream by None.
-                Ok(resp.is_some())
-            })
-            .filter_map(|resp| resp)
-            .then(|resp| match resp {
-                Ok(resp) => Ok((resp, WriteFlags::default())),
-                Err(e) => {
-                    error!("backup send failed"; "error" => ?e);
-                    Err(Error::RpcFailure(RpcStatus::new(
-                        RpcStatusCode::GRPC_STATUS_UNKNOWN,
-                        Some(format!("{:?}", e)),
-                    )))
-                }
+        if let Err(status) = match Task::new(req, tx) {
+            Ok(task) => self.scheduler.schedule(task).map_err(|e| {
+                RpcStatus::new(
+                    RpcStatusCode::GRPC_STATUS_INVALID_ARGUMENT,
+                    Some(format!("{:?}", e)),
+                )
             }),
-        );
+            Err(e) => Err(RpcStatus::new(
+                RpcStatusCode::GRPC_STATUS_UNKNOWN,
+                Some(format!("{:?}", e)),
+            )),
+        } {
+            error!("backup task initiate failed"; "error" => ?status);
+            ctx.spawn(sink.fail(status).map_err(|e| {
+                error!("backup failed to send error"; "error" => ?e);
+            }));
+            return;
+        };
+
+        let send_resp = sink.send_all(rx.then(|resp| match resp {
+            Ok(resp) => Ok((resp, WriteFlags::default())),
+            Err(e) => {
+                error!("backup send failed"; "error" => ?e);
+                Err(Error::RpcFailure(RpcStatus::new(
+                    RpcStatusCode::GRPC_STATUS_UNKNOWN,
+                    Some(format!("{:?}", e)),
+                )))
+            }
+        }));
         ctx.spawn(
             send_resp
                 .map(|_s /* the sink */| {
@@ -55,31 +65,6 @@ impl Backup for Service {
                 })
                 .map_err(|e| {
                     error!("backup send failed"; "error" => ?e);
-                }),
-        );
-        ctx.spawn(
-            stream
-                .for_each(move |req| match Task::new(req, tx.clone()) {
-                    Ok(task) => scheduler.schedule(task).map_err(|e| {
-                        error!("backup schedule failed"; "error" => ?e);
-                        Error::RpcFailure(RpcStatus::new(
-                            RpcStatusCode::GRPC_STATUS_UNKNOWN,
-                            Some(format!("{:?}", e)),
-                        ))
-                    }),
-                    Err(e) => {
-                        error!("backup task initiate failed"; "error" => ?e);
-                        Err(Error::RpcFailure(RpcStatus::new(
-                            RpcStatusCode::GRPC_STATUS_UNKNOWN,
-                            Some(format!("{:?}", e)),
-                        )))
-                    }
-                })
-                .map(|_s| {
-                    info!("backup recv half closed");
-                })
-                .map_err(|e| {
-                    error!("backup schedule failed"; "error" => ?e);
                 }),
         );
     }
