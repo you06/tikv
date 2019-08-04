@@ -25,6 +25,7 @@ grpcio = { version = "0.5.0-alpha.3", features = [ "openssl-vendored" ] }
 rand = "0.6.5"
 url = "2.0"
 quick-error = "1.2.2"
+hex = "0.3"
 
 [dev-dependencies]
 test_util = { path = "../test_util" }

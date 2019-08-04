@@ -35,6 +35,11 @@ pub struct Task {
 
 impl fmt::Display for Task {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+impl fmt::Debug for Task {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BackupTask")
             .field("start_ts", &self.start_ts)
             .field("end_ts", &self.end_ts)
@@ -260,8 +265,8 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                 Ok((mut files, stat)) => {
                     info!("backup region finish";
                         "region" => ?brange.region,
-                        "start_key" => ?start_key,
-                        "end_key" => ?end_key,
+                        "start_key" => hex::encode_upper(&start_key),
+                        "end_key" => hex::encode_upper(&end_key),
                         "details" => ?stat);
                     summary.add(&stat);
                     // Fill key range and ts.
@@ -277,8 +282,8 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                 Err(e) => {
                     error!("backup region failed";
                         "region" => ?brange.region,
-                        "start_key" => ?response.get_start_key(),
-                        "end_key" => ?response.get_end_key(),
+                        "start_key" => hex::encode_upper(response.get_start_key()),
+                        "end_key" => hex::encode_upper(response.get_end_key()),
                         "error" => ?e);
                     response.set_error(e.into());
                     resp.unbounded_send(Some(response)).unwrap();
@@ -500,6 +505,74 @@ mod tests {
         for (start_key, end_key, ranges) in case {
             t(start_key, end_key, ranges.clone());
             tt(start_key, end_key, ranges);
+        }
+    }
+
+    use tikv::storage::mvcc::tests::*;
+    use tikv::storage::SHORT_VALUE_MAX_LEN;
+    #[test]
+    fn test_handle_backup_task() {
+        let (tmp, mut endpoint) = new_endpoint();
+        let engine = endpoint.engine.clone();
+
+        endpoint
+            .region_info
+            .set_regions(vec![(b"".to_vec(), b"5".to_vec(), 1)]);
+
+        let mut ts = 1;
+        let mut alloc_ts = || {
+            ts += 1;
+            ts
+        };
+        let mut backup_tss = vec![];
+        // Multi-versions for key 0..9.
+        for len in &[SHORT_VALUE_MAX_LEN - 1, SHORT_VALUE_MAX_LEN * 2] {
+            for i in 0..10u8 {
+                let start = alloc_ts();
+                let commit = alloc_ts();
+                let key = format!("{}", i);
+                must_prewrite_put(
+                    &engine,
+                    key.as_bytes(),
+                    &vec![i; *len],
+                    key.as_bytes(),
+                    start,
+                );
+                must_commit(&engine, key.as_bytes(), start, commit);
+                backup_tss.push((alloc_ts(), len));
+            }
+        }
+
+        // TODO: check key number for each snapshot.
+        for (ts, len) in backup_tss {
+            let mut req = BackupRequest::new();
+            req.set_start_key(vec![]);
+            req.set_end_key(vec![b'5']);
+            req.set_start_version(ts);
+            req.set_end_version(ts);
+            let (tx, rx) = unbounded();
+            // Empty path should return an error.
+            Task::new(req.clone(), tx.clone()).unwrap_err();
+
+            // Set an unique path to avoid AlreadyExists error.
+            req.set_path(format!(
+                "local://{}",
+                tmp.path().join(format!("{}", ts)).display()
+            ));
+            let task = Task::new(req, tx.clone()).unwrap();
+            endpoint.handle_backup_task(task);
+            let (resp, rx) = rx.into_future().wait().unwrap();
+            let resp = resp.unwrap().unwrap();
+            assert!(!resp.has_error(), "{:?}", resp);
+            let file_len = if *len <= SHORT_VALUE_MAX_LEN { 1 } else { 2 };
+            assert_eq!(
+                resp.get_files().len(),
+                file_len, /* default and write */
+                "{:?}",
+                resp
+            );
+            let (none, rx) = rx.into_future().wait().unwrap();
+            assert!(none.as_ref().unwrap().is_none(), "{:?}", none);
         }
     }
 }

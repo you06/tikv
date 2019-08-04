@@ -208,7 +208,8 @@ pub fn default_not_found_error(key: Vec<u8>, write: Write, hint: &str) -> Error 
     }
 }
 
-#[cfg(test)]
+// #[cfg(test)]
+#[allow(dead_code)]
 pub mod tests {
     use kvproto::kvrpcpb::{Context, IsolationLevel};
 

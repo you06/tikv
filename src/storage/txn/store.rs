@@ -83,6 +83,7 @@ pub trait Scanner: Send {
     fn take_statistics(&mut self) -> Statistics;
 }
 
+// TODO(backup): support read data key.
 #[derive(PartialEq, Debug)]
 pub enum TxnEntry {
     Prewrite { default: KvPair, lock: KvPair },

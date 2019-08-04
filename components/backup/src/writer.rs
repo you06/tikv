@@ -45,8 +45,12 @@ impl BackupWriter {
         for e in entris {
             match e {
                 TxnEntry::Commit { default, write } => {
-                    self.default.put(&default.0, &default.1)?;
-                    self.default_written = true;
+                    // Default may be empty if value is small.
+                    if !default.0.is_empty() {
+                        self.default.put(&default.0, &default.1)?;
+                        self.default_written = true;
+                    }
+                    assert!(!write.0.is_empty());
                     self.write.put(&write.0, &write.1)?;
                     self.write_written = true;
                 }
