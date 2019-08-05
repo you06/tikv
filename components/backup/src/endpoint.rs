@@ -4,7 +4,7 @@ use std::sync::*;
 use std::time::*;
 
 use engine::DB;
-use futures::sync::mpsc::UnboundedSender;
+use futures::sync::mpsc::*;
 use futures::{lazy, Future};
 use kvproto::backup::*;
 use kvproto::kvrpcpb::{Context, IsolationLevel};
@@ -178,7 +178,12 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
         ctx.set_region_epoch(brange.region.get_region_epoch().to_owned());
         ctx.set_peer(brange.leader.clone());
         // TODO: make it async.
-        let snapshot = self.engine.snapshot(&ctx).unwrap();
+        let snapshot = match self.engine.snapshot(&ctx) {
+            Ok(s) => s,
+            Err(e) => {
+                return tx.send((brange, Err(e.into()))).unwrap();
+            }
+        };
         let db = self.db.clone();
         let store_id = self.store_id;
         self.workers.spawn(lazy(move || {
@@ -339,7 +344,6 @@ fn backup_file_name(store_id: u64, region: &Region) -> String {
 mod tests {
     use super::*;
     use crate::LocalStorage;
-    use futures::sync::mpsc::unbounded;
     use futures::{Future, Stream};
     use kvproto::metapb;
     use std::collections::BTreeMap;
@@ -576,6 +580,87 @@ mod tests {
         }
     }
 
-// TODO: test region error and mvcc/txn error
-// TODO: test remote stop
+    #[test]
+    fn test_scan_error() {
+        let (tmp, endpoint) = new_endpoint();
+        let engine = endpoint.engine.clone();
+
+        endpoint
+            .region_info
+            .set_regions(vec![(b"".to_vec(), b"5".to_vec(), 1)]);
+
+        fn check_response<F>(rx: UnboundedReceiver<BackupResponse>, check: F)
+        where
+            F: FnOnce(BackupResponse),
+        {
+            let (resp, rx) = rx.into_future().wait().unwrap();
+            let resp = resp.unwrap();
+            check(resp);
+            let (none, _rx) = rx.into_future().wait().unwrap();
+            assert!(none.is_none(), "{:?}", none);
+        }
+
+        let mut ts = 1;
+        let mut alloc_ts = || {
+            ts += 1;
+            ts
+        };
+        let start = alloc_ts();
+        let key = format!("{}", start);
+        must_prewrite_put(
+            &engine,
+            key.as_bytes(),
+            key.as_bytes(),
+            key.as_bytes(),
+            start,
+        );
+
+        let now = alloc_ts();
+        let mut req = BackupRequest::new();
+        req.set_start_key(vec![]);
+        req.set_end_key(vec![b'5']);
+        req.set_start_version(now);
+        req.set_end_version(now);
+        // Set an unique path to avoid AlreadyExists error.
+        req.set_path(format!(
+            "local://{}",
+            tmp.path().join(format!("{}", now)).display()
+        ));
+        let (tx, rx) = unbounded();
+        let task = Task::new(req.clone(), tx).unwrap();
+        endpoint.handle_backup_task(task);
+        check_response(rx, |resp| {
+            assert!(resp.get_error().has_kv_error(), "{:?}", resp);
+            assert!(resp.get_error().get_kv_error().has_locked(), "{:?}", resp);
+            assert_eq!(resp.get_files().len(), 0, "{:?}", resp);
+        });
+
+        // Commit the perwrite.
+        let commit = alloc_ts();
+        must_commit(&engine, key.as_bytes(), start, commit);
+
+        // Test whether it can correctly convert not leader to regoin error.
+        engine.trigger_not_leader();
+        let now = alloc_ts();
+        req.set_start_version(now);
+        req.set_end_version(now);
+        // Set an unique path to avoid AlreadyExists error.
+        req.set_path(format!(
+            "local://{}",
+            tmp.path().join(format!("{}", now)).display()
+        ));
+        let (tx, rx) = unbounded();
+        let task = Task::new(req.clone(), tx).unwrap();
+        endpoint.handle_backup_task(task);
+        check_response(rx, |resp| {
+            assert!(resp.get_error().has_region_error(), "{:?}", resp);
+            assert!(
+                resp.get_error().get_region_error().has_not_leader(),
+                "{:?}",
+                resp
+            );
+        });
+    }
+    // TODO: region err in txn(engine(request))
+    // TODO: test remote stop
 }

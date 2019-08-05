@@ -18,7 +18,8 @@ impl Into<ErrorPb> for Error {
                 err.mut_cluster_id_error().set_current(current);
                 err.mut_cluster_id_error().set_request(request);
             }
-            Error::Txn(TxnError::Engine(EngineError::Request(e)))
+            Error::Engine(EngineError::Request(e))
+            | Error::Txn(TxnError::Engine(EngineError::Request(e)))
             | Error::Txn(TxnError::Mvcc(MvccError::Engine(EngineError::Request(e)))) => {
                 err.set_region_error(e);
             }
@@ -65,6 +66,11 @@ quick_error! {
             cause(err)
             display("{}", err)
             description(err.description())
+        }
+        Engine(err: EngineError) {
+            from()
+            display("engine error {:?}", err)
+            description("engine error")
         }
         Txn(err: TxnError) {
             from()
