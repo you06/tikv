@@ -77,10 +77,11 @@ pub struct BackupRange {
 
 pub struct Endpoint<E: Engine, R: RegionInfoProvider> {
     store_id: u64,
-    engine: E,
-    region_info: R,
     workers: ThreadPool,
     db: Arc<DB>,
+
+    pub(crate) engine: E,
+    pub(crate) region_info: R,
 }
 
 impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
@@ -341,7 +342,7 @@ fn backup_file_name(store_id: u64, region: &Region) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::LocalStorage;
     use futures::{Future, Stream};
@@ -352,22 +353,24 @@ mod tests {
     use tikv::raftstore::coprocessor::{RegionInfo, SeekRegionCallback};
     use tikv::raftstore::store::util::new_peer;
     use tikv::storage::kv::Result as EngineResult;
+    use tikv::storage::mvcc::tests::*;
+    use tikv::storage::SHORT_VALUE_MAX_LEN;
     use tikv::storage::{
         Mutation, Options, RocksEngine, Storage, TestEngineBuilder, TestStorageBuilder,
     };
 
     #[derive(Clone)]
-    struct MockRegionInfoProvider {
+    pub struct MockRegionInfoProvider {
         // start_key -> (region_id, end_key)
         regions: Arc<Mutex<BTreeMap<Vec<u8>, RegionInfo>>>,
     }
     impl MockRegionInfoProvider {
-        fn new() -> Self {
+        pub fn new() -> Self {
             MockRegionInfoProvider {
                 regions: Arc::default(),
             }
         }
-        fn set_regions(&self, regions: Vec<(Vec<u8>, Vec<u8>, u64)>) {
+        pub fn set_regions(&self, regions: Vec<(Vec<u8>, Vec<u8>, u64)>) {
             let mut map = self.regions.lock().unwrap();
             let regions: BTreeMap<_, _> = regions
                 .into_iter()
@@ -399,7 +402,7 @@ mod tests {
         }
     }
 
-    fn new_endpoint() -> (TempDir, Endpoint<RocksEngine, MockRegionInfoProvider>) {
+    pub fn new_endpoint() -> (TempDir, Endpoint<RocksEngine, MockRegionInfoProvider>) {
         let temp = TempDir::new().unwrap();
         let rocks = TestEngineBuilder::new()
             .path(temp.path())
@@ -411,6 +414,17 @@ mod tests {
             temp,
             Endpoint::new(1, rocks, MockRegionInfoProvider::new(), db),
         )
+    }
+
+    pub fn check_response<F>(rx: UnboundedReceiver<BackupResponse>, check: F)
+    where
+        F: FnOnce(BackupResponse),
+    {
+        let (resp, rx) = rx.into_future().wait().unwrap();
+        let resp = resp.unwrap();
+        check(resp);
+        let (none, _rx) = rx.into_future().wait().unwrap();
+        assert!(none.is_none(), "{:?}", none);
     }
 
     #[test]
@@ -512,8 +526,6 @@ mod tests {
         }
     }
 
-    use tikv::storage::mvcc::tests::*;
-    use tikv::storage::SHORT_VALUE_MAX_LEN;
     #[test]
     fn test_handle_backup_task() {
         let (tmp, endpoint) = new_endpoint();
@@ -589,17 +601,6 @@ mod tests {
             .region_info
             .set_regions(vec![(b"".to_vec(), b"5".to_vec(), 1)]);
 
-        fn check_response<F>(rx: UnboundedReceiver<BackupResponse>, check: F)
-        where
-            F: FnOnce(BackupResponse),
-        {
-            let (resp, rx) = rx.into_future().wait().unwrap();
-            let resp = resp.unwrap();
-            check(resp);
-            let (none, _rx) = rx.into_future().wait().unwrap();
-            assert!(none.is_none(), "{:?}", none);
-        }
-
         let mut ts = 1;
         let mut alloc_ts = || {
             ts += 1;
@@ -662,5 +663,4 @@ mod tests {
         });
     }
     // TODO: region err in txn(engine(request))
-    // TODO: test remote stop
 }

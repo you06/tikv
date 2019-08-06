@@ -4,7 +4,7 @@ use futures::sync::mpsc;
 use grpcio::*;
 use kvproto::backup::{BackupRequest, BackupResponse};
 use kvproto::backup_grpc::*;
-use tikv_util::worker::Scheduler;
+use tikv_util::worker::*;
 
 use super::Task;
 
@@ -67,5 +67,94 @@ impl Backup for Service {
                     error!("backup send failed"; "error" => ?e);
                 }),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::endpoint::tests::*;
+    use tikv::storage::mvcc::tests::*;
+    use tikv_util::mpsc::Receiver;
+
+    fn new_rpc_suite() -> (Server, BackupClient, Receiver<Option<Task>>) {
+        let env = Arc::new(EnvBuilder::new().build());
+        let (scheduler, rx) = dummy_scheduler();
+        let backup_service = super::Service::new(scheduler);
+        let builder =
+            ServerBuilder::new(env.clone()).register_service(create_backup(backup_service));
+        let mut server = builder.bind("127.0.0.1", 0).build().unwrap();
+        server.start();
+        let (_, port) = server.bind_addrs()[0];
+        let addr =format!("127.0.0.1:{}", port);
+        let channel = ChannelBuilder::new(env.clone()).connect(&addr);
+        let client = BackupClient::new(channel);
+        (server, client, rx)
+    }
+
+    #[test]
+    fn test_client_stop() {
+        test_util::init_log_for_test();
+        let (_server, client, rx) = new_rpc_suite();
+
+        let (tmp, endpoint) = new_endpoint();
+        let engine = endpoint.engine.clone();
+        endpoint.region_info.set_regions(vec![
+            (b"".to_vec(), b"2".to_vec(), 1),
+            (b"2".to_vec(), b"5".to_vec(), 1),
+        ]);
+
+        let mut ts = 1;
+        let mut alloc_ts = || {
+            ts += 1;
+            ts
+        };
+        for i in 0..5 {
+            let start = alloc_ts();
+            let key = format!("{}", i);
+            must_prewrite_put(
+                &engine,
+                key.as_bytes(),
+                key.as_bytes(),
+                key.as_bytes(),
+                start,
+            );
+            let commit = alloc_ts();
+            must_commit(&engine, key.as_bytes(), start, commit);
+        }
+
+        let now = alloc_ts();
+        let mut req = BackupRequest::new();
+        req.set_start_key(vec![]);
+        req.set_end_key(vec![b'5']);
+        req.set_start_version(now);
+        req.set_end_version(now);
+        // Set an unique path to avoid AlreadyExists error.
+        req.set_path(format!(
+            "local://{}",
+            tmp.path().join(format!("{}", now)).display()
+        ));
+
+        let stream = client.backup(&req).unwrap();
+        let task = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Drop stream without start receiving will cause cancel error.
+        drop(stream);
+        // A stopped remote must not cause panic.
+        endpoint.handle_backup_task(task.unwrap());
+
+        // Set an unique path to avoid AlreadyExists error.
+        req.set_path(format!(
+            "local://{}",
+            tmp.path().join(format!("{}", alloc_ts())).display()
+        ));
+        let stream = client.backup(&req).unwrap();
+        // Drop steam once it received something.
+        client.spawn(stream.into_future().then(|_res| Ok(())));
+        let task = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // A stopped remote must not cause panic.
+        endpoint.handle_backup_task(task.unwrap());
     }
 }
