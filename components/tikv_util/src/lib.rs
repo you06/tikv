@@ -515,6 +515,7 @@ pub fn set_panic_hook(panic_abort: bool, data_dir: &str) {
                 logger::convert_log_level_to_slog_level(level),
                 false, // Use sync logger to avoid an unnecessary log thread.
                 false, // It is initialized already.
+                vec![],
             );
         }
 
@@ -526,7 +527,13 @@ pub fn set_panic_hook(panic_abort: bool, data_dir: &str) {
         if panic_abort {
             process::abort();
         } else {
-            process::exit(1);
+            unsafe {
+                // Calling process::exit would trigger global static to destroy, like C++
+                // static variables of RocksDB, which may cause other threads encounter
+                // pure virtual method call. So calling libc::_exit() instead to skip the
+                // cleanup process.
+                libc::_exit(1);
+            }
         }
     }))
 }

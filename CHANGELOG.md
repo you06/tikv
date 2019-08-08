@@ -2,7 +2,73 @@
 All notable changes to this project are documented in this file.
 See also [TiDB Changelog](https://github.com/pingcap/tidb/blob/master/CHANGELOG.md) and [PD Changelog](https://github.com/pingcap/pd/blob/master/CHANGELOG.md).
 
-## [Unreleased]
+## [3.0.2]
+
++ Fix the bug that TiKV panics if the Raft Log is not written in time [#5160](https://github.com/tikv/tikv/pull/5160)
++ Fix the bug that the panic information is not written into the log file after TiKV panics [#5198](https://github.com/tikv/tikv/pull/5198)
++ Fix the bug that the insert operation might be incorrectly performed in the pessimistic transaction [#5203](https://github.com/tikv/tikv/pull/5203)
++ Lower the output level of some logs that require no manual intervention to INFO [#5193](https://github.com/tikv/tikv/pull/5193)
++ Improve the accuracy of monitoring the storage engine size [#5200](https://github.com/tikv/tikv/pull/5200)
++ Improve the accuracy of the Region size in TiKV Control [#5195](https://github.com/tikv/tikv/pull/5195)
++ Improve the performance of the deadlock detector for pessimistic locks [#5192](https://github.com/tikv/tikv/pull/5192)
++ Improve the performance of GC in the Titan storage engine [#5197](https://github.com/tikv/tikv/pull/5197)
+
+## [3.0.1]
++ Engine
+  - Count size of blob files in used size
+  - Add titan metrics
+  - Check max required open files for titan
+  - Add blob-run-mode for titan
+  - Set `blob_run_mode=ReadOnly` for non-default CFs
+  - Update rust-rocksdb
++ Server
+  - Call `_exit` instead of exit in panic hook
++ Transaction
+  - Scan versions from u64::max to `start_ts` in `get_txn`
+  - Improve the performance of dead lock detection
+
+## [3.0.0]
+
++ Engine
+  - Introduce Titan, a key-value plugin that improves write performance for
+  scenarios with value sizes greater than 1KiB, and relieves write
+  amplification in certain degrees
+  - Optimize memory management to reduce memory allocation and copying for `Iterator Key Bound Option` 
+  - Support `block cache` sharing among different column families
+
++ Server
+  - Support reversed `raw_scan` and `raw_batch_scan`
+  - Support batch receiving and sending Raft messages, improving TPS by 7% for write intensive scenarios
+  - Support getting monitoring information via HTTP
+  - Support Local Reader in RawKV to improve performance  
+  - Reduce context switch overhead from `batch commands`
+
++ Raftstore
+  - Support Multi-thread Raftstore and Multi-thread Apply to improve scalabilities,
+    concurrency capacity, and resource usage within a single node.
+    Performance improves by 70% under the same level of pressure
+  - Support checking RocksDB Level 0 files before applying snapshots to avoid write stall
+  - Support Hibernate Regions to optimize CPU consumption from RaftStore (Experimental)
+  - Remove the local reader thread
+
++ Transaction
+  - Support distributed GC and concurrent lock resolving for improved GC performance
+  - Support the pessimistic transaction model (Experimental)
+  - Modify the semantics of `Insert` to allow Prewrite to succeed only when there is no Key
+  - Remove `txn scheduler `
+  - Add monitoring items related to `read index` and `GC worker`
+
++ Coprocessor
+  - Refactor the computation framework to implement vector operators, computation
+  using vector expressions, and vector aggregations to improve performance  
+  - Support providing operator execution status for the `EXPLAIN ANALYZE` statement
+  in TiDB  
+  - Switch to the `work-stealing` thread pool model to reduce context switch cost
+
++ Misc
+  - Develop a unified log format specification with restructured log system to
+  facilitate collection and analysis by tools
+  - Add performance metrics related to configuration information and key bound crossing. 
 
 ## [3.0.0-rc.3]
 
