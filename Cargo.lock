@@ -1238,12 +1238,7 @@ dependencies = [
 [[package]]
 name = "kvproto"
 version = "0.0.2"
-source = "git+https://github.com/pingcap/kvproto.git#ec9df5f208a768074c28d04bfb8b90e5321d2f69"
-replace = "kvproto 0.0.2"
-
-[[package]]
-name = "kvproto"
-version = "0.0.2"
+source = "git+https://github.com/pingcap/kvproto.git?branch=backup2#e2cfbf881d5206fcddafc99dc481562a4f9c3a07"
 dependencies = [
  "futures 0.1.23 (registry+https://github.com/rust-lang/crates.io-index)",
  "grpcio 0.5.0-alpha.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1251,6 +1246,12 @@ dependencies = [
  "protobuf-build 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "raft-proto 0.6.0-alpha (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "kvproto"
+version = "0.0.2"
+source = "git+https://github.com/pingcap/kvproto.git#ec9df5f208a768074c28d04bfb8b90e5321d2f69"
+replace = "kvproto 0.0.2 (git+https://github.com/pingcap/kvproto.git?branch=backup2)"
 
 [[package]]
 name = "language-tags"
@@ -3496,6 +3497,7 @@ dependencies = [
 "checksum jemallocator 0.1.9 (registry+https://github.com/rust-lang/crates.io-index)" = "9f0cd42ac65f758063fea55126b0148b1ce0a6354ff78e07a4d6806bc65c4ab3"
 "checksum kernel32-sys 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "7507624b29483431c0ba2d82aece8ca6cdba9382bff4ddd0f7490560c056098d"
 "checksum kvproto 0.0.2 (git+https://github.com/pingcap/kvproto.git)" = "<none>"
+"checksum kvproto 0.0.2 (git+https://github.com/pingcap/kvproto.git?branch=backup2)" = "<none>"
 "checksum language-tags 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "a91d884b6667cd606bb5a69aa0c99ba811a115fc68915e7056ec08a46e93199a"
 "checksum lazy_static 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)" = "3b37545ab726dd833ec6420aaba8231c5b320814b9029ad585555d2a03e94fbf"
 "checksum lazy_static 1.3.0 (registry+https://github.com/rust-lang/crates.io-index)" = "bc5729f27f159ddd61f4df6228e827e86643d4d3e7c32183cb30a1c08f604a14"
