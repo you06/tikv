@@ -32,4 +32,4 @@ pub use endpoint::{Endpoint, Task};
 pub use errors::{Error, Result};
 pub use service::Service;
 pub use storage::{create_storage, LocalStorage, Storage};
-pub use writer::BackupWriter;
+pub use writer::{name_to_cf, BackupWriter};

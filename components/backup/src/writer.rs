@@ -3,8 +3,8 @@ use std::sync::Arc;
 use engine::rocks::{SstWriter, SstWriterBuilder};
 use engine::{CF_DEFAULT, CF_WRITE, DB};
 use kvproto::backup::File;
-use tikv::storage::txn::TxnEntry;
 use tikv::raftstore::store::keys;
+use tikv::storage::txn::TxnEntry;
 use tikv_util;
 
 use crate::{Error, Result, Storage};
@@ -99,5 +99,16 @@ impl BackupWriter {
             files.push(write);
         }
         Ok(files)
+    }
+}
+
+/// Extrat CF name from sst name.
+pub fn name_to_cf(name: &str) -> engine::CfName {
+    if name.contains(CF_DEFAULT) {
+        CF_DEFAULT
+    } else if name.contains(CF_WRITE) {
+        CF_WRITE
+    } else {
+        unreachable!()
     }
 }
