@@ -4,6 +4,7 @@ use engine::rocks::{SstWriter, SstWriterBuilder};
 use engine::{CF_DEFAULT, CF_WRITE, DB};
 use kvproto::backup::File;
 use tikv::storage::txn::TxnEntry;
+use tikv::raftstore::store::keys;
 use tikv_util;
 
 use crate::{Error, Result, Storage};
@@ -47,11 +48,16 @@ impl BackupWriter {
                 TxnEntry::Commit { default, write } => {
                     // Default may be empty if value is small.
                     if !default.0.is_empty() {
-                        self.default.put(&default.0, &default.1)?;
+                        // HACK: The actual key stored in TiKV is called
+                        // data_key and always prefix a `z`. But iterator strips
+                        // it, we need to add the prefix manually.
+                        let data_key_default = keys::data_key(&default.0);
+                        self.default.put(&data_key_default, &default.1)?;
                         self.default_written = true;
                     }
                     assert!(!write.0.is_empty());
-                    self.write.put(&write.0, &write.1)?;
+                    let data_key_write = keys::data_key(&write.0);
+                    self.write.put(&data_key_write, &write.1)?;
                     self.write_written = true;
                 }
                 TxnEntry::Prewrite { .. } | TxnEntry::Rollback { .. } => {
