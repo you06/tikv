@@ -27,7 +27,12 @@ url = "2.0"
 quick-error = "1.2.2"
 hex = "0.3"
 
+rusoto_core = "0.40.0"
+rusoto_s3 = "0.40.0"
+rusoto_credential = "0.40.0"
+
 [dev-dependencies]
 test_util = { path = "../test_util" }
 test_raftstore = { path = "../test_raftstore" }
 uuid = { version = "0.6", features = [ "serde", "v4" ] }
+rusoto_mock = "0.40.0"
