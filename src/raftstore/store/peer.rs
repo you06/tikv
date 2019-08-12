@@ -3,18 +3,19 @@
 use std::cell::RefCell;
 use std::collections::Bound::{Excluded, Unbounded};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{atomic, Arc};
 use std::time::{Duration, Instant};
-use std::{cmp, mem, slice, u64};
+use std::{cmp, mem, u64};
 
 use engine::rocks::{Snapshot, SyncSnapshot, WriteBatch, WriteOptions, DB};
 use engine::{Engines, Peekable};
 use kvproto::metapb;
 use kvproto::pdpb::PeerStats;
 use kvproto::raft_cmdpb::{
-    self, AdminCmdType, AdminResponse, CmdType, RaftCmdRequest, RaftCmdResponse, ReadIndexResponse,
-    Request, Response, TransferLeaderRequest, TransferLeaderResponse,
+    self, AdminCmdType, AdminResponse, CmdType, CommitMergeRequest, RaftCmdRequest,
+    RaftCmdResponse, ReadIndexResponse, Request, Response, TransferLeaderRequest,
+    TransferLeaderResponse,
 };
 use kvproto::raft_serverpb::{
     MergeState, PeerState, RaftApplyState, RaftMessage, RaftSnapshotData,
@@ -26,8 +27,8 @@ use raft::{
     NO_LIMIT,
 };
 use time::Timespec;
+use uuid::Uuid;
 
-use crate::pd::{PdTask, INVALID_ID};
 use crate::raftstore::coprocessor::{CoprocessorHost, RegionChangeEvent};
 use crate::raftstore::store::fsm::store::PollContext;
 use crate::raftstore::store::fsm::{
@@ -35,8 +36,10 @@ use crate::raftstore::store::fsm::{
 };
 use crate::raftstore::store::keys::{enc_end_key, enc_start_key};
 use crate::raftstore::store::worker::{ReadDelegate, ReadProgress, RegionTask};
+use crate::raftstore::store::PdTask;
 use crate::raftstore::store::{keys, Callback, Config, ReadResponse, RegionSnapshot};
 use crate::raftstore::{Error, Result};
+use pd_client::INVALID_ID;
 use tikv_util::collections::HashMap;
 use tikv_util::time::{duration_to_sec, monotonic_raw_now};
 use tikv_util::worker::Scheduler;
@@ -53,7 +56,7 @@ use super::DestroyPeerJob;
 const SHRINK_CACHE_CAPACITY: usize = 64;
 
 struct ReadIndexRequest {
-    id: u64,
+    id: Uuid,
     cmds: MustConsumeVec<(RaftCmdRequest, Callback)>,
     renew_lease_time: Timespec,
     read_index: Option<u64>,
@@ -62,10 +65,7 @@ struct ReadIndexRequest {
 impl ReadIndexRequest {
     // Transmutes `self.id` to a 8 bytes slice, so that we can use the payload to do read index.
     fn binary_id(&self) -> &[u8] {
-        unsafe {
-            let id = &self.id as *const u64 as *const u8;
-            slice::from_raw_parts(id, 8)
-        }
+        self.id.as_bytes()
     }
 
     fn push_command(&mut self, req: RaftCmdRequest, cb: Callback) {
@@ -74,7 +74,7 @@ impl ReadIndexRequest {
     }
 
     fn with_command(
-        id: u64,
+        id: Uuid,
         req: RaftCmdRequest,
         cb: Callback,
         renew_lease_time: Timespec,
@@ -102,17 +102,11 @@ impl Drop for ReadIndexRequest {
 
 #[derive(Default)]
 struct ReadIndexQueue {
-    id_allocator: u64,
     reads: VecDeque<ReadIndexRequest>,
     ready_cnt: usize,
 }
 
 impl ReadIndexQueue {
-    fn next_id(&mut self) -> u64 {
-        self.id_allocator += 1;
-        self.id_allocator
-    }
-
     fn clear_uncommitted(&mut self, term: u64) {
         for mut read in self.reads.drain(self.ready_cnt..) {
             RAFT_READ_INDEX_PENDING_COUNT.sub(read.cmds.len() as i64);
@@ -340,6 +334,8 @@ pub struct Peer {
     pub pending_merge_state: Option<MergeState>,
     /// The state to wait for `PrepareMerge` apply result.
     pub pending_merge_apply_result: Option<WaitApplyResultState>,
+    /// source region is catching up logs for merge
+    pub catch_up_logs: Option<Arc<AtomicU64>>,
 
     /// Write Statistics for PD to schedule hot spot.
     pub peer_stat: PeerStat,
@@ -380,7 +376,7 @@ impl Peer {
             ..Default::default()
         };
 
-        let raft_group = RawNode::new(&raft_cfg, ps)?;
+        let raft_group = RawNode::with_logger(&raft_cfg, ps, &slog_global::get_global())?;
         let mut peer = Peer {
             peer,
             region_id: region.get_id(),
@@ -420,6 +416,7 @@ impl Peer {
             pending_messages: vec![],
             pending_merge_apply_result: None,
             peer_stat: PeerStat::default(),
+            catch_up_logs: None,
         };
 
         // If this region has only one peer and I am the one, campaign directly.
@@ -446,6 +443,36 @@ impl Peer {
     #[inline]
     fn next_proposal_index(&self) -> u64 {
         self.raft_group.raft.raft_log.last_index() + 1
+    }
+
+    #[inline]
+    pub fn get_index_term(&self, idx: u64) -> u64 {
+        match self.raft_group.raft.raft_log.term(idx) {
+            Ok(t) => t,
+            Err(e) => panic!("{} fail to load term for {}: {:?}", self.tag, idx, e),
+        }
+    }
+
+    #[inline]
+    pub fn maybe_append_merge_entries(&mut self, merge: CommitMergeRequest) -> Option<u64> {
+        let mut entries = merge.get_entries();
+        if entries.is_empty() {
+            return None;
+        }
+        let first = entries.first().unwrap();
+
+        // make sure message should be with index not smaller than committed
+        let mut log_idx = first.get_index() - 1;
+        if log_idx < self.raft_group.raft.raft_log.committed {
+            entries = &entries[(self.raft_group.raft.raft_log.committed - log_idx) as usize..];
+            log_idx = self.raft_group.raft.raft_log.committed;
+        }
+        let log_term = self.get_index_term(log_idx);
+
+        self.raft_group
+            .raft
+            .raft_log
+            .maybe_append(log_idx, log_term, merge.get_commit(), entries)
     }
 
     /// Tries to destroy itself. Returns a job (if needed) to do more cleaning tasks.
@@ -1295,7 +1322,7 @@ impl Peer {
                 if entry.term == self.term() && (split_to_be_updated || merge_to_be_update) {
                     let ctx = ProposalContext::from_bytes(&entry.context);
                     if split_to_be_updated && ctx.contains(ProposalContext::SPLIT) {
-                        // We dont need to suspect its lease because peers of new region that
+                        // We don't need to suspect its lease because peers of new region that
                         // in other store do not start election before theirs election timeout
                         // which is longer than the max leader lease.
                         // It's safe to read local within its current lease, however, it's not
@@ -1440,7 +1467,6 @@ impl Peer {
         ctx: &mut PollContext<T, C>,
         apply_state: RaftApplyState,
         applied_index_term: u64,
-        merged: bool,
         apply_metrics: &ApplyMetrics,
     ) -> bool {
         let mut has_ready = false;
@@ -1449,10 +1475,8 @@ impl Peer {
             panic!("{} should not applying snapshot.", self.tag);
         }
 
-        if !merged {
-            self.raft_group
-                .advance_apply(apply_state.get_applied_index());
-        }
+        self.raft_group
+            .advance_apply(apply_state.get_applied_index());
 
         let progress_to_be_updated = self.mut_store().applied_index_term() != applied_index_term;
         self.mut_store().set_applied_state(apply_state);
@@ -1757,9 +1781,7 @@ impl Peer {
             ConfChangeType::AddLearnerNode => {
                 return Ok(());
             }
-            ConfChangeType::BeginMembershipChange | ConfChangeType::FinalizeMembershipChange => {
-                unimplemented!()
-            }
+            ConfChangeType::BeginMembershipChange | ConfChangeType::FinalizeMembershipChange => unimplemented!(),
         }
         let healthy = self.count_healthy_node(progress.voters());
         let quorum_after_change = raft::majority(progress.voter_ids().len());
@@ -1920,9 +1942,8 @@ impl Peer {
         let last_pending_read_count = self.raft_group.raft.pending_read_count();
         let last_ready_read_count = self.raft_group.raft.ready_read_count();
 
-        let id = self.pending_reads.next_id();
-        let ctx = id.to_ne_bytes();
-        self.raft_group.read_index(ctx.to_vec());
+        let id = Uuid::new_v4();
+        self.raft_group.read_index(id.as_bytes().to_vec());
 
         let pending_read_count = self.raft_group.raft.pending_read_count();
         let ready_read_count = self.raft_group.raft.ready_read_count();
@@ -2406,7 +2427,7 @@ pub trait RequestInspector {
         for r in req.get_requests() {
             match r.get_cmd_type() {
                 CmdType::Get | CmdType::Snap | CmdType::ReadIndex => has_read = true,
-                CmdType::Delete | CmdType::Put | CmdType::DeleteRange | CmdType::IngestSST => {
+                CmdType::Delete | CmdType::Put | CmdType::DeleteRange | CmdType::IngestSst => {
                     has_write = true
                 }
                 CmdType::Prewrite | CmdType::Invalid => {
@@ -2614,7 +2635,7 @@ impl ReadExecutor {
                 | CmdType::Put
                 | CmdType::Delete
                 | CmdType::DeleteRange
-                | CmdType::IngestSST
+                | CmdType::IngestSst
                 | CmdType::Invalid => unreachable!(),
             };
             resp.set_cmd_type(cmd_type);
@@ -2814,7 +2835,7 @@ mod tests {
             (CmdType::Put, RequestPolicy::ProposeNormal),
             (CmdType::Delete, RequestPolicy::ProposeNormal),
             (CmdType::DeleteRange, RequestPolicy::ProposeNormal),
-            (CmdType::IngestSST, RequestPolicy::ProposeNormal),
+            (CmdType::IngestSst, RequestPolicy::ProposeNormal),
         ] {
             let mut request = raft_cmdpb::Request::default();
             request.set_cmd_type(op);

@@ -209,7 +209,7 @@ fn test_backup_and_import() {
     // Use importer to restore backup files.
     let storage = create_storage(&storage_path).unwrap();
     let region = suite.cluster.get_region(b"");
-    let mut sst_meta = SSTMeta::new();
+    let mut sst_meta = SstMeta::new();
     sst_meta.region_id = region.get_id();
     sst_meta.set_region_epoch(region.get_region_epoch().clone());
     sst_meta.set_uuid(uuid::Uuid::new_v4().as_bytes().to_vec());
@@ -234,7 +234,7 @@ fn test_backup_and_import() {
 
         // Make ingest command.
         let mut ingest = Request::default();
-        ingest.set_cmd_type(CmdType::IngestSST);
+        ingest.set_cmd_type(CmdType::IngestSst);
         ingest.mut_ingest_sst().set_sst(m.clone());
         let mut header = RaftRequestHeader::default();
         let leader = suite.context.get_peer().clone();

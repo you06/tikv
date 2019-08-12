@@ -23,20 +23,9 @@ impl Into<ErrorPb> for Error {
             | Error::Txn(TxnError::Mvcc(MvccError::Engine(EngineError::Request(e)))) => {
                 err.set_region_error(e);
             }
-            Error::Txn(TxnError::Mvcc(MvccError::KeyIsLocked {
-                primary,
-                ts,
-                key,
-                ttl,
-                txn_size,
-            })) => {
+            Error::Txn(TxnError::Mvcc(MvccError::KeyIsLocked (info))) => {
                 let mut e = KeyError::new();
-                let info = e.mut_locked();
-                info.set_primary_lock(primary);
-                info.set_lock_version(ts);
-                info.set_key(key);
-                info.set_lock_ttl(ttl);
-                info.set_txn_size(txn_size);
+                e.set_locked(info);
                 err.set_kv_error(e);
             }
             other => {

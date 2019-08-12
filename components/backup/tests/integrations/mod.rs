@@ -4,7 +4,7 @@ mod test_backup;
 
 pub fn init() {
     use std::sync::*;
-    static INIT: Once = ONCE_INIT;
+    static INIT: Once = Once::new();
     INIT.call_once(|| {
         test_util::init_log_for_test();
     })

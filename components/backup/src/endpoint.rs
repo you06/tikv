@@ -191,7 +191,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
             let snap_store = SnapshotStore::new(
                 snapshot,
                 backup_ts,
-                IsolationLevel::SI,
+                IsolationLevel::Si,
                 false, /* fill_cache */
             );
             let start_key = brange.start_key.clone();

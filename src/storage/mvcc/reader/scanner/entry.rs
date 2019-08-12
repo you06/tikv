@@ -162,7 +162,7 @@ impl<S: Snapshot> EntryScanner<S> {
 
             if has_lock {
                 match self.cfg.isolation_level {
-                    IsolationLevel::SI => {
+                    IsolationLevel::Si => {
                         // Only needs to check lock in SI
                         let lock = {
                             let lock_value = self.lock_cursor.value(&mut self.statistics.lock);
@@ -177,7 +177,7 @@ impl<S: Snapshot> EntryScanner<S> {
                             CheckLockResult::Ignored(_) => unimplemented!(),
                         }
                     }
-                    IsolationLevel::RC => {}
+                    IsolationLevel::Rc => {}
                 }
                 self.lock_cursor.next(&mut self.statistics.lock);
             }

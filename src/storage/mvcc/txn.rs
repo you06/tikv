@@ -51,7 +51,7 @@ impl<S: Snapshot> MvccTxn<S> {
                 fill_cache,
                 None,
                 None,
-                IsolationLevel::SI,
+                IsolationLevel::Si,
             ),
             gc_reader: MvccReader::new(
                 snapshot,
@@ -59,7 +59,7 @@ impl<S: Snapshot> MvccTxn<S> {
                 fill_cache,
                 None,
                 None,
-                IsolationLevel::SI,
+                IsolationLevel::Si,
             ),
             start_ts,
             writes: vec![],
@@ -202,14 +202,14 @@ impl<S: Snapshot> MvccTxn<S> {
         // abort. Resolve it immediately.
         // Optimistic lock's for_update_ts is zero.
         if for_update_ts > lock.for_update_ts {
-            Err(Error::KeyIsLocked {
-                key: key.into_raw()?,
-                primary: lock.primary,
-                ts: lock.ts,
-                // Set ttl to 0 so TiDB will resolve lock immediately.
-                ttl: 0,
-                txn_size: lock.txn_size,
-            })
+            let mut info = kvproto::kvrpcpb::LockInfo::default();
+            info.set_primary_lock(lock.primary);
+            info.set_lock_version(lock.ts);
+            info.set_key(key.into_raw()?);
+            // Set ttl to 0 so TiDB will resolve lock immediately.
+            info.set_lock_ttl(0);
+            info.set_txn_size(lock.txn_size);
+            Err(Error::KeyIsLocked(info))
         } else {
             Err(Error::Other("stale request".into()))
         }
@@ -225,13 +225,13 @@ impl<S: Snapshot> MvccTxn<S> {
         let for_update_ts = options.for_update_ts;
         if let Some(lock) = self.reader.load_lock(&key)? {
             if lock.ts != self.start_ts {
-                return Err(Error::KeyIsLocked {
-                    key: key.into_raw()?,
-                    primary: lock.primary,
-                    ts: lock.ts,
-                    ttl: lock.ttl,
-                    txn_size: options.txn_size,
-                });
+                let mut info = kvproto::kvrpcpb::LockInfo::default();
+                info.set_primary_lock(lock.primary);
+                info.set_lock_version(lock.ts);
+                info.set_key(key.into_raw()?);
+                info.set_lock_ttl(lock.ttl);
+                info.set_txn_size(options.txn_size);
+                return Err(Error::KeyIsLocked(info));
             }
             if lock.lock_type != LockType::Pessimistic {
                 return Err(Error::LockTypeNotMatch {
@@ -390,13 +390,13 @@ impl<S: Snapshot> MvccTxn<S> {
         // Check whether the current key is locked at any timestamp.
         if let Some(lock) = self.reader.load_lock(&key)? {
             if lock.ts != self.start_ts {
-                return Err(Error::KeyIsLocked {
-                    key: key.into_raw()?,
-                    primary: lock.primary,
-                    ts: lock.ts,
-                    ttl: lock.ttl,
-                    txn_size: lock.txn_size,
-                });
+                let mut info = kvproto::kvrpcpb::LockInfo::default();
+                info.set_primary_lock(lock.primary);
+                info.set_lock_version(lock.ts);
+                info.set_key(key.into_raw()?);
+                info.set_lock_ttl(lock.ttl);
+                info.set_txn_size(lock.txn_size);
+                return Err(Error::KeyIsLocked(info));
             }
             // TODO: remove it in future
             if lock.lock_type == LockType::Pessimistic {
@@ -1165,7 +1165,7 @@ mod tests {
             true,
             None,
             None,
-            IsolationLevel::SI,
+            IsolationLevel::Si,
         );
 
         let v = reader.scan_values_in_default(&Key::from_raw(&[3])).unwrap();
@@ -1209,7 +1209,7 @@ mod tests {
             true,
             None,
             None,
-            IsolationLevel::SI,
+            IsolationLevel::Si,
         );
 
         assert_eq!(reader.seek_ts(3).unwrap().unwrap(), Key::from_raw(&[2]));

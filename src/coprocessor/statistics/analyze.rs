@@ -2,25 +2,21 @@
 
 use std::mem;
 
-use kvproto::coprocessor::{KeyRange, Response};
-use protobuf::Message;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
-use tipb::analyze::{self, AnalyzeColumnsReq, AnalyzeIndexReq, AnalyzeReq, AnalyzeType};
-use tipb::executor::TableScan;
 
-use crate::storage::{Snapshot, SnapshotStore, Statistics};
+use kvproto::coprocessor::{KeyRange, Response};
+use protobuf::Message;
+use tidb_query::codec::datum;
+use tidb_query::executor::{Executor, IndexScanExecutor, ScanExecutor, TableScanExecutor};
+use tipb::{self, AnalyzeColumnsReq, AnalyzeIndexReq, AnalyzeReq, AnalyzeType, TableScan};
 
-use crate::coprocessor::codec::datum;
-use crate::coprocessor::dag::executor::{
-    Executor, IndexScanExecutor, ScanExecutor, TableScanExecutor,
-};
-use crate::coprocessor::*;
-
-use super::cmsketch::CMSketch;
-use super::fmsketch::FMSketch;
+use super::cmsketch::CmSketch;
+use super::fmsketch::FmSketch;
 use super::histogram::Histogram;
-use crate::coprocessor::dag::storage_impl::TiKVStorage;
+use crate::coprocessor::dag::TiKVStorage;
+use crate::coprocessor::*;
+use crate::storage::{Snapshot, SnapshotStore, Statistics};
 
 // `AnalyzeContext` is used to handle `AnalyzeReq`
 pub struct AnalyzeContext<S: Snapshot> {
@@ -58,11 +54,11 @@ impl<S: Snapshot> AnalyzeContext<S> {
         let (collectors, pk_builder) = builder.collect_columns_stats()?;
 
         let pk_hist = pk_builder.into_proto();
-        let cols: Vec<analyze::SampleCollector> =
+        let cols: Vec<tipb::SampleCollector> =
             collectors.into_iter().map(|col| col.into_proto()).collect();
 
         let res_data = {
-            let mut res = analyze::AnalyzeColumnsResp::default();
+            let mut res = tipb::AnalyzeColumnsResp::default();
             res.set_collectors(cols.into());
             res.set_pk_hist(pk_hist);
             box_try!(res.write_to_bytes())
@@ -77,7 +73,7 @@ impl<S: Snapshot> AnalyzeContext<S> {
         scanner: &mut IndexScanExecutor<TiKVStorage<SnapshotStore<S>>>,
     ) -> Result<Vec<u8>> {
         let mut hist = Histogram::new(req.get_bucket_size() as usize);
-        let mut cms = CMSketch::new(
+        let mut cms = CmSketch::new(
             req.get_cmsketch_depth() as usize,
             req.get_cmsketch_width() as usize,
         );
@@ -91,7 +87,7 @@ impl<S: Snapshot> AnalyzeContext<S> {
                 }
             }
         }
-        let mut res = analyze::AnalyzeIndexResp::default();
+        let mut res = tipb::AnalyzeIndexResp::default();
         res.set_hist(hist.into_proto());
         if let Some(c) = cms {
             res.set_cms(c.into_proto());
@@ -134,7 +130,7 @@ impl<S: Snapshot> RequestHandler for AnalyzeContext<S> {
             }
             Err(Error::Other(e)) => {
                 let mut resp = Response::default();
-                resp.set_other_error(format!("{}", e));
+                resp.set_other_error(e.to_string());
                 Ok(resp)
             }
             Err(e) => Err(e),
@@ -232,8 +228,8 @@ struct SampleCollector {
     null_count: u64,
     count: u64,
     max_sample_size: usize,
-    fm_sketch: FMSketch,
-    cm_sketch: Option<CMSketch>,
+    fm_sketch: FmSketch,
+    cm_sketch: Option<CmSketch>,
     rng: ThreadRng,
     total_size: u64,
 }
@@ -250,15 +246,15 @@ impl SampleCollector {
             null_count: 0,
             count: 0,
             max_sample_size,
-            fm_sketch: FMSketch::new(max_fm_sketch_size),
-            cm_sketch: CMSketch::new(cm_sketch_depth, cm_sketch_width),
+            fm_sketch: FmSketch::new(max_fm_sketch_size),
+            cm_sketch: CmSketch::new(cm_sketch_depth, cm_sketch_width),
             rng: thread_rng(),
             total_size: 0,
         }
     }
 
-    fn into_proto(self) -> analyze::SampleCollector {
-        let mut s = analyze::SampleCollector::default();
+    fn into_proto(self) -> tipb::SampleCollector {
+        let mut s = tipb::SampleCollector::default();
         s.set_null_count(self.null_count as i64);
         s.set_count(self.count as i64);
         s.set_fm_sketch(self.fm_sketch.into_proto());
@@ -295,8 +291,9 @@ impl SampleCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coprocessor::codec::datum;
-    use crate::coprocessor::codec::datum::Datum;
+
+    use tidb_query::codec::datum;
+    use tidb_query::codec::datum::Datum;
 
     #[test]
     fn test_sample_collector() {

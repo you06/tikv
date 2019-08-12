@@ -258,6 +258,10 @@ impl RegionIterator {
     }
 
     pub fn seek(&mut self, key: &[u8]) -> Result<bool> {
+        fail_point!("region_snapshot_seek", |_| {
+            return Err(box_err!("region seek error"));
+        });
+
         self.should_seekable(key)?;
         let key = keys::data_key(key);
         if key == self.end_key {
@@ -814,6 +818,7 @@ mod tests {
         let mut cfg = TiKvConfig::default();
         let cache = cfg.storage.block_cache.build_shared_cache();
         cfg.rocksdb.titan.enabled = true;
+        cfg.rocksdb.titan.disable_gc = true;
         cfg.rocksdb.titan.purge_obsolete_files_period = ReadableDuration::secs(1);
         cfg.rocksdb.defaultcf.disable_auto_compactions = true;
         // Disable dynamic_level_bytes, otherwise SST files would be ingested to L0.

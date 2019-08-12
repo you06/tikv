@@ -37,14 +37,9 @@ quick_error! {
             cause(err)
             description(err.description())
         }
-        KeyIsLocked { key: Vec<u8>, primary: Vec<u8>, ts: u64, ttl: u64, txn_size: u64 } {
+        KeyIsLocked(info: kvproto::kvrpcpb::LockInfo) {
             description("key is locked (backoff or cleanup)")
-            display("key is locked (backoff or cleanup) {}-{}@{} ttl {} txn_size {}",
-                        hex::encode_upper(key),
-                        hex::encode_upper(primary),
-                        ts,
-                        ttl,
-                        txn_size)
+            display("key is locked (backoff or cleanup) {:?}", info)
         }
         BadFormatLock { description("bad format lock data") }
         BadFormatWrite { description("bad format write data") }
@@ -98,82 +93,72 @@ quick_error! {
 
 impl Error {
     pub fn maybe_clone(&self) -> Option<Error> {
-        match *self {
-            Error::Engine(ref e) => e.maybe_clone().map(Error::Engine),
-            Error::Codec(ref e) => e.maybe_clone().map(Error::Codec),
-            Error::KeyIsLocked {
-                ref key,
-                ref primary,
-                ts,
-                ttl,
-                txn_size,
-            } => Some(Error::KeyIsLocked {
-                key: key.clone(),
-                primary: primary.clone(),
-                ts,
-                ttl,
-                txn_size,
-            }),
+        match self {
+            Error::Engine(e) => e.maybe_clone().map(Error::Engine),
+            Error::Codec(e) => e.maybe_clone().map(Error::Codec),
+            Error::KeyIsLocked(info) => Some(Error::KeyIsLocked(info.clone())),
             Error::BadFormatLock => Some(Error::BadFormatLock),
             Error::BadFormatWrite => Some(Error::BadFormatWrite),
             Error::TxnLockNotFound {
                 start_ts,
                 commit_ts,
-                ref key,
+                key,
             } => Some(Error::TxnLockNotFound {
-                start_ts,
-                commit_ts,
+                start_ts: *start_ts,
+                commit_ts: *commit_ts,
                 key: key.to_owned(),
             }),
             Error::LockTypeNotMatch {
                 start_ts,
-                ref key,
+                key,
                 pessimistic,
             } => Some(Error::LockTypeNotMatch {
-                start_ts,
+                start_ts: *start_ts,
                 key: key.to_owned(),
-                pessimistic,
+                pessimistic: *pessimistic,
             }),
             Error::WriteConflict {
                 start_ts,
                 conflict_start_ts,
                 conflict_commit_ts,
-                ref key,
-                ref primary,
+                key,
+                primary,
             } => Some(Error::WriteConflict {
-                start_ts,
-                conflict_start_ts,
-                conflict_commit_ts,
+                start_ts: *start_ts,
+                conflict_start_ts: *conflict_start_ts,
+                conflict_commit_ts: *conflict_commit_ts,
                 key: key.to_owned(),
                 primary: primary.to_owned(),
             }),
             Error::Deadlock {
                 start_ts,
                 lock_ts,
-                ref lock_key,
+                lock_key,
                 deadlock_key_hash,
             } => Some(Error::Deadlock {
-                start_ts,
-                lock_ts,
+                start_ts: *start_ts,
+                lock_ts: *lock_ts,
                 lock_key: lock_key.to_owned(),
-                deadlock_key_hash,
+                deadlock_key_hash: *deadlock_key_hash,
             }),
-            Error::AlreadyExist { ref key } => Some(Error::AlreadyExist { key: key.clone() }),
-            Error::DefaultNotFound { ref key, ref write } => Some(Error::DefaultNotFound {
+            Error::AlreadyExist { key } => Some(Error::AlreadyExist { key: key.clone() }),
+            Error::DefaultNotFound { key, write } => Some(Error::DefaultNotFound {
                 key: key.to_owned(),
                 write: write.clone(),
             }),
             Error::KeyVersion => Some(Error::KeyVersion),
-            Error::Committed { commit_ts } => Some(Error::Committed { commit_ts }),
-            Error::PessimisticLockRollbacked { start_ts, ref key } => {
+            Error::Committed { commit_ts } => Some(Error::Committed {
+                commit_ts: *commit_ts,
+            }),
+            Error::PessimisticLockRollbacked { start_ts, key } => {
                 Some(Error::PessimisticLockRollbacked {
-                    start_ts,
+                    start_ts: *start_ts,
                     key: key.to_owned(),
                 })
             }
-            Error::PessimisticLockNotFound { start_ts, ref key } => {
+            Error::PessimisticLockNotFound { start_ts, key } => {
                 Some(Error::PessimisticLockNotFound {
-                    start_ts,
+                    start_ts: *start_ts,
                     key: key.to_owned(),
                 })
             }
@@ -227,7 +212,7 @@ pub mod tests {
     pub fn must_get<E: Engine>(engine: &E, key: &[u8], ts: u64, expect: &[u8]) {
         let ctx = Context::default();
         let snapshot = engine.snapshot(&ctx).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
         assert_eq!(
             reader.get(&Key::from_raw(key), ts).unwrap().unwrap(),
             expect
@@ -237,7 +222,7 @@ pub mod tests {
     pub fn must_get_rc<E: Engine>(engine: &E, key: &[u8], ts: u64, expect: &[u8]) {
         let ctx = Context::default();
         let snapshot = engine.snapshot(&ctx).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::RC);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Rc);
         assert_eq!(
             reader.get(&Key::from_raw(key), ts).unwrap().unwrap(),
             expect
@@ -247,14 +232,14 @@ pub mod tests {
     pub fn must_get_none<E: Engine>(engine: &E, key: &[u8], ts: u64) {
         let ctx = Context::default();
         let snapshot = engine.snapshot(&ctx).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
         assert!(reader.get(&Key::from_raw(key), ts).unwrap().is_none());
     }
 
     pub fn must_get_err<E: Engine>(engine: &E, key: &[u8], ts: u64) {
         let ctx = Context::default();
         let snapshot = engine.snapshot(&ctx).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
         assert!(reader.get(&Key::from_raw(key), ts).is_err());
     }
 
@@ -563,7 +548,7 @@ pub mod tests {
 
     pub fn must_locked<E: Engine>(engine: &E, key: &[u8], start_ts: u64) {
         let snapshot = engine.snapshot(&Context::default()).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
         let lock = reader.load_lock(&Key::from_raw(key)).unwrap().unwrap();
         assert_eq!(lock.ts, start_ts);
         assert_ne!(lock.lock_type, LockType::Pessimistic);
@@ -576,7 +561,7 @@ pub mod tests {
         for_update_ts: u64,
     ) {
         let snapshot = engine.snapshot(&Context::default()).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
         let lock = reader.load_lock(&Key::from_raw(key)).unwrap().unwrap();
         assert_eq!(lock.ts, start_ts);
         assert_eq!(lock.for_update_ts, for_update_ts);
@@ -585,7 +570,7 @@ pub mod tests {
 
     pub fn must_unlocked<E: Engine>(engine: &E, key: &[u8]) {
         let snapshot = engine.snapshot(&Context::default()).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
         assert!(reader.load_lock(&Key::from_raw(key)).unwrap().is_none());
     }
 
@@ -606,7 +591,7 @@ pub mod tests {
 
     pub fn must_seek_write_none<E: Engine>(engine: &E, key: &[u8], ts: u64) {
         let snapshot = engine.snapshot(&Context::default()).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
         assert!(reader
             .seek_write(&Key::from_raw(key), ts)
             .unwrap()
@@ -622,7 +607,7 @@ pub mod tests {
         write_type: WriteType,
     ) {
         let snapshot = engine.snapshot(&Context::default()).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
         let (t, write) = reader.seek_write(&Key::from_raw(key), ts).unwrap().unwrap();
         assert_eq!(t, commit_ts);
         assert_eq!(write.start_ts, start_ts);
@@ -631,7 +616,7 @@ pub mod tests {
 
     pub fn must_get_commit_ts<E: Engine>(engine: &E, key: &[u8], start_ts: u64, commit_ts: u64) {
         let snapshot = engine.snapshot(&Context::default()).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
         let (ts, write_type) = reader
             .get_txn_commit_info(&Key::from_raw(key), start_ts)
             .unwrap()
@@ -642,7 +627,7 @@ pub mod tests {
 
     pub fn must_get_commit_ts_none<E: Engine>(engine: &E, key: &[u8], start_ts: u64) {
         let snapshot = engine.snapshot(&Context::default()).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
 
         let ret = reader.get_txn_commit_info(&Key::from_raw(key), start_ts);
         assert!(ret.is_ok());
@@ -656,7 +641,7 @@ pub mod tests {
 
     pub fn must_get_rollback_ts<E: Engine>(engine: &E, key: &[u8], start_ts: u64) {
         let snapshot = engine.snapshot(&Context::default()).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
 
         let (ts, write_type) = reader
             .get_txn_commit_info(&Key::from_raw(key), start_ts)
@@ -668,7 +653,7 @@ pub mod tests {
 
     pub fn must_get_rollback_ts_none<E: Engine>(engine: &E, key: &[u8], start_ts: u64) {
         let snapshot = engine.snapshot(&Context::default()).unwrap();
-        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::SI);
+        let mut reader = MvccReader::new(snapshot, None, true, None, None, IsolationLevel::Si);
 
         let ret = reader
             .get_txn_commit_info(&Key::from_raw(key), start_ts)
@@ -694,7 +679,7 @@ pub mod tests {
             false,
             None,
             None,
-            IsolationLevel::SI,
+            IsolationLevel::Si,
         );
         assert_eq!(
             reader.scan_keys(start.map(Key::from_raw), limit).unwrap(),

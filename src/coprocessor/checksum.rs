@@ -1,16 +1,17 @@
 // Copyright 2018 TiKV Project Authors. Licensed under Apache-2.0.
 
 use crc::crc64::{self, Digest, Hasher64};
+
 use kvproto::coprocessor::{KeyRange, Response};
 use protobuf::Message;
-use tipb::checksum::{ChecksumAlgorithm, ChecksumRequest, ChecksumResponse};
+use tipb::{ChecksumAlgorithm, ChecksumRequest, ChecksumResponse};
 
-use crate::storage::{Snapshot, SnapshotStore, Statistics};
+use tidb_query::storage::scanner::{RangesScanner, RangesScannerOptions};
+use tidb_query::storage::Range;
 
-use crate::coprocessor::dag::storage::scanner::{RangesScanner, RangesScannerOptions};
-use crate::coprocessor::dag::storage::Range;
-use crate::coprocessor::dag::storage_impl::TiKVStorage;
+use crate::coprocessor::dag::TiKVStorage;
 use crate::coprocessor::*;
+use crate::storage::{Snapshot, SnapshotStore, Statistics};
 
 // `ChecksumContext` is used to handle `ChecksumRequest`
 pub struct ChecksumContext<S: Snapshot> {
@@ -48,7 +49,7 @@ impl<S: Snapshot> ChecksumContext<S> {
 impl<S: Snapshot> RequestHandler for ChecksumContext<S> {
     fn handle_request(&mut self) -> Result<Response> {
         let algorithm = self.req.get_algorithm();
-        if algorithm != ChecksumAlgorithm::Crc64_Xor {
+        if algorithm != ChecksumAlgorithm::Crc64Xor {
             return Err(box_err!("unknown checksum algorithm {:?}", algorithm));
         }
 
