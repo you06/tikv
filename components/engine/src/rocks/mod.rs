@@ -22,7 +22,7 @@ pub use engine_rocksdb::{
     ReadOptions, SeekKey, SequentialFile, SliceTransform, TablePropertiesCollection,
     TablePropertiesCollector, TablePropertiesCollectorFactory, TitanBlobIndex, TitanDBOptions,
     UserCollectedProperties, Writable, WriteBatch, WriteOptions, WriteStallCondition,
-    WriteStallInfo, DB,
+    WriteStallInfo, DB, SstFileWriter,
 };
 
 #[cfg(test)]
