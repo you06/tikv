@@ -494,61 +494,67 @@ mod tests {
     /// Case 1. next() out of bound
     #[test]
     fn test_move_next_user_key_out_of_bound_1() {
-        //     let engine = TestEngineBuilder::new().build().unwrap();
+        let engine = TestEngineBuilder::new().build().unwrap();
 
-        //     // Generate 1 put for [a].
-        //     must_prewrite_put(&engine, b"a", b"a_value", b"a", SEEK_BOUND * 2);
-        //     must_commit(&engine, b"a", SEEK_BOUND * 2, SEEK_BOUND * 2);
+        // Generate 1 put for [a].
+        must_prewrite_put(&engine, b"a", b"a_value", b"a", SEEK_BOUND * 2);
+        must_commit(&engine, b"a", SEEK_BOUND * 2, SEEK_BOUND * 2);
 
-        //     // Generate SEEK_BOUND / 2 rollback and 1 put for [b] .
-        //     for ts in 0..SEEK_BOUND / 2 {
-        //         must_rollback(&engine, b"b", ts as u64);
-        //     }
-        //     must_prewrite_put(&engine, b"b", b"b_value", b"a", SEEK_BOUND / 2);
-        //     must_commit(&engine, b"b", SEEK_BOUND / 2, SEEK_BOUND / 2);
+        // Generate SEEK_BOUND / 2 rollback and 1 put for [b] .
+        for ts in 0..SEEK_BOUND / 2 {
+            must_rollback(&engine, b"b", ts as u64);
+        }
+        must_prewrite_put(&engine, b"b", b"b_value", b"a", SEEK_BOUND / 2);
+        must_commit(&engine, b"b", SEEK_BOUND / 2, SEEK_BOUND / 2);
 
-        //     let snapshot = engine.snapshot(&Context::default()).unwrap();
-        //     let mut scanner = ScannerBuilder::new(snapshot, SEEK_BOUND * 2, false)
-        //         .range(None, None)
-        //         .build()
-        //         .unwrap();
+        let snapshot = engine.snapshot(&Context::default()).unwrap();
+        let mut scanner = ScannerBuilder::new(snapshot, SEEK_BOUND * 2, false)
+            .range(None, None)
+            .build_entry_scanner()
+            .unwrap();
 
-        //     // The following illustration comments assume that SEEK_BOUND = 4.
+        // The following illustration comments assume that SEEK_BOUND = 4.
 
-        //     // Initial position: 1 seek_to_first:
-        //     //   a_8 b_2 b_1 b_0
-        //     //   ^cursor
-        //     // After get the value, use 1 next to reach next user key:
-        //     //   a_8 b_2 b_1 b_0
-        //     //       ^cursor
-        //     assert_eq!(
-        //         scanner.next().unwrap(),
-        //         Some((Key::from_raw(b"a"), b"a_value".to_vec())),
-        //     );
-        //     let statistics = scanner.take_statistics();
-        //     assert_eq!(statistics.write.seek, 1);
-        //     assert_eq!(statistics.write.next, 1);
+        // Initial position: 1 seek_to_first:
+        //   a_8 b_2 b_1 b_0
+        //   ^cursor
+        // After get the value, use 1 next to reach next user key:
+        //   a_8 b_2 b_1 b_0
+        //       ^cursor
+        let entry = EntryBuilder::default()
+            .key(b"a")
+            .value(b"a_value")
+            .start_ts(16)
+            .commit_ts(16)
+            .build_commit(WriteType::Put, true);
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry),);
+        let statistics = scanner.take_statistics();
+        assert_eq!(statistics.write.seek, 1);
+        assert_eq!(statistics.write.next, 1);
 
-        //     // Before:
-        //     //   a_8 b_2 b_1 b_0
-        //     //       ^cursor
-        //     // We should be able to get wanted value without any operation.
-        //     // After get the value, use SEEK_BOUND / 2 + 1 next to reach next user key and stop:
-        //     //   a_8 b_2 b_1 b_0
-        //     //                   ^cursor
-        //     assert_eq!(
-        //         scanner.next().unwrap(),
-        //         Some((Key::from_raw(b"b"), b"b_value".to_vec())),
-        //     );
-        //     let statistics = scanner.take_statistics();
-        //     assert_eq!(statistics.write.seek, 0);
-        //     assert_eq!(statistics.write.next, (SEEK_BOUND / 2 + 1) as usize);
+        // Before:
+        //   a_8 b_2 b_1 b_0
+        //       ^cursor
+        // We should be able to get wanted value without any operation.
+        // After get the value, use SEEK_BOUND / 2 + 1 next to reach next user key and stop:
+        //   a_8 b_2 b_1 b_0
+        //                   ^cursor
+        let entry = EntryBuilder::default()
+            .key(b"b")
+            .value(b"b_value")
+            .start_ts(4)
+            .commit_ts(4)
+            .build_commit(WriteType::Put, true);
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry),);
+        let statistics = scanner.take_statistics();
+        assert_eq!(statistics.write.seek, 0);
+        assert_eq!(statistics.write.next, (SEEK_BOUND / 2 + 1) as usize);
 
-        //     // Next we should get nothing.
-        //     assert_eq!(scanner.next().unwrap(), None);
-        //     let statistics = scanner.take_statistics();
-        //     assert_eq!(statistics.write.seek, 0);
-        //     assert_eq!(statistics.write.next, 0);
+        // Next we should get nothing.
+        assert_eq!(scanner.next_entry().unwrap(), None);
+        let statistics = scanner.take_statistics();
+        assert_eq!(statistics.write.seek, 0);
+        assert_eq!(statistics.write.next, 0);
     }
 
     /// Check whether everything works as usual when
@@ -557,162 +563,142 @@ mod tests {
     /// Case 2. seek() out of bound
     #[test]
     fn test_move_next_user_key_out_of_bound_2() {
-        //     let engine = TestEngineBuilder::new().build().unwrap();
+        let engine = TestEngineBuilder::new().build().unwrap();
 
-        //     // Generate 1 put for [a].
-        //     must_prewrite_put(&engine, b"a", b"a_value", b"a", SEEK_BOUND * 2);
-        //     must_commit(&engine, b"a", SEEK_BOUND * 2, SEEK_BOUND * 2);
+        // Generate 1 put for [a].
+        must_prewrite_put(&engine, b"a", b"a_value", b"a", SEEK_BOUND * 2);
+        must_commit(&engine, b"a", SEEK_BOUND * 2, SEEK_BOUND * 2);
 
-        //     // Generate SEEK_BOUND-1 rollback and 1 put for [b] .
-        //     for ts in 1..SEEK_BOUND {
-        //         must_rollback(&engine, b"b", ts as u64);
-        //     }
-        //     must_prewrite_put(&engine, b"b", b"b_value", b"a", SEEK_BOUND);
-        //     must_commit(&engine, b"b", SEEK_BOUND, SEEK_BOUND);
+        // Generate SEEK_BOUND-1 rollback and 1 put for [b] .
+        for ts in 1..SEEK_BOUND {
+            must_rollback(&engine, b"b", ts as u64);
+        }
+        must_prewrite_put(&engine, b"b", b"b_value", b"a", SEEK_BOUND);
+        must_commit(&engine, b"b", SEEK_BOUND, SEEK_BOUND);
 
-        //     let snapshot = engine.snapshot(&Context::default()).unwrap();
-        //     let mut scanner = ScannerBuilder::new(snapshot, SEEK_BOUND * 2, false)
-        //         .range(None, None)
-        //         .build()
-        //         .unwrap();
+        let snapshot = engine.snapshot(&Context::default()).unwrap();
+        let mut scanner = ScannerBuilder::new(snapshot, SEEK_BOUND * 2, false)
+            .range(None, None)
+            .build_entry_scanner()
+            .unwrap();
 
-        //     // The following illustration comments assume that SEEK_BOUND = 4.
+        // The following illustration comments assume that SEEK_BOUND = 4.
 
-        //     // Initial position: 1 seek_to_first:
-        //     //   a_8 b_4 b_3 b_2 b_1
-        //     //   ^cursor
-        //     // After get the value, use 1 next to reach next user key:
-        //     //   a_8 b_4 b_3 b_2 b_1
-        //     //       ^cursor
-        //     assert_eq!(
-        //         scanner.next().unwrap(),
-        //         Some((Key::from_raw(b"a"), b"a_value".to_vec())),
-        //     );
-        //     let statistics = scanner.take_statistics();
-        //     assert_eq!(statistics.write.seek, 1);
-        //     assert_eq!(statistics.write.next, 1);
+        // Initial position: 1 seek_to_first:
+        //   a_8 b_4 b_3 b_2 b_1
+        //   ^cursor
+        // After get the value, use 1 next to reach next user key:
+        //   a_8 b_4 b_3 b_2 b_1
+        //       ^cursor
+        let entry = EntryBuilder::default()
+            .key(b"a")
+            .value(b"a_value")
+            .start_ts(16)
+            .commit_ts(16)
+            .build_commit(WriteType::Put, true);
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry));
+        let statistics = scanner.take_statistics();
+        assert_eq!(statistics.write.seek, 1);
+        assert_eq!(statistics.write.next, 1);
 
-        //     // Before:
-        //     //   a_8 b_4 b_3 b_2 b_1
-        //     //       ^cursor
-        //     // We should be able to get wanted value without any operation.
-        //     // After get the value, use SEEK_BOUND-1 next: (TODO: fix it to SEEK_BOUND)
-        //     //   a_8 b_4 b_3 b_2 b_1
-        //     //                   ^cursor
-        //     // We still pointing at current user key, so a seek:
-        //     //   a_8 b_4 b_3 b_2 b_1
-        //     //                       ^cursor
-        //     assert_eq!(
-        //         scanner.next().unwrap(),
-        //         Some((Key::from_raw(b"b"), b"b_value".to_vec())),
-        //     );
-        //     let statistics = scanner.take_statistics();
-        //     assert_eq!(statistics.write.seek, 1);
-        //     assert_eq!(statistics.write.next, (SEEK_BOUND - 1) as usize);
+        // Before:
+        //   a_8 b_4 b_3 b_2 b_1
+        //       ^cursor
+        // We should be able to get wanted value without any operation.
+        // After get the value, use SEEK_BOUND-1 next: (TODO: fix it to SEEK_BOUND)
+        //   a_8 b_4 b_3 b_2 b_1
+        //                   ^cursor
+        // We still pointing at current user key, so a seek:
+        //   a_8 b_4 b_3 b_2 b_1
+        //                       ^cursor
+        let entry = EntryBuilder::default()
+            .key(b"b")
+            .value(b"b_value")
+            .start_ts(8)
+            .commit_ts(8)
+            .build_commit(WriteType::Put, true);
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry),);
+        let statistics = scanner.take_statistics();
+        assert_eq!(statistics.write.seek, 1);
+        assert_eq!(statistics.write.next, (SEEK_BOUND - 1) as usize);
 
-        //     // Next we should get nothing.
-        //     assert_eq!(scanner.next().unwrap(), None);
-        //     let statistics = scanner.take_statistics();
-        //     assert_eq!(statistics.write.seek, 0);
-        //     assert_eq!(statistics.write.next, 0);
+        // Next we should get nothing.
+        assert_eq!(scanner.next_entry().unwrap(), None);
+        let statistics = scanner.take_statistics();
+        assert_eq!(statistics.write.seek, 0);
+        assert_eq!(statistics.write.next, 0);
     }
 
     /// Range is left open right closed.
     #[test]
     fn test_range() {
-        // let engine = TestEngineBuilder::new().build().unwrap();
+        let engine = TestEngineBuilder::new().build().unwrap();
 
-        // // Generate 1 put for [1], [2] ... [6].
-        // for i in 1..7 {
-        //     // ts = 1: value = []
-        //     must_prewrite_put(&engine, &[i], &[], &[i], 1);
-        //     must_commit(&engine, &[i], 1, 1);
+        // Generate 1 put for [1], [2] ... [6].
+        for i in 1..7 {
+            // ts = 1: value = []
+            must_prewrite_put(&engine, &[i], &[], &[i], 1);
+            must_commit(&engine, &[i], 1, 1);
 
-        //     // ts = 7: value = [ts]
-        //     must_prewrite_put(&engine, &[i], &[i], &[i], 7);
-        //     must_commit(&engine, &[i], 7, 7);
+            // ts = 7: value = [ts]
+            must_prewrite_put(&engine, &[i], &[i], &[i], 7);
+            must_commit(&engine, &[i], 7, 7);
 
-        //     // ts = 14: value = []
-        //     must_prewrite_put(&engine, &[i], &[], &[i], 14);
-        //     must_commit(&engine, &[i], 14, 14);
-        // }
+            // ts = 14: value = []
+            must_prewrite_put(&engine, &[i], &[], &[i], 14);
+            must_commit(&engine, &[i], 14, 14);
+        }
 
-        // let snapshot = engine.snapshot(&Context::default()).unwrap();
+        let snapshot = engine.snapshot(&Context::default()).unwrap();
 
-        // // Test both bound specified.
-        // let mut scanner = ScannerBuilder::new(snapshot.clone(), 10, false)
-        //     .range(Some(Key::from_raw(&[3u8])), Some(Key::from_raw(&[5u8])))
-        //     .build()
-        //     .unwrap();
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[3u8]), vec![3u8]))
-        // );
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[4u8]), vec![4u8]))
-        // );
-        // assert_eq!(scanner.next().unwrap(), None);
+        // Test both bound specified.
+        let mut scanner = ScannerBuilder::new(snapshot.clone(), 10, false)
+            .range(Some(Key::from_raw(&[3u8])), Some(Key::from_raw(&[5u8])))
+            .build_entry_scanner()
+            .unwrap();
 
-        // // Test left bound not specified.
-        // let mut scanner = ScannerBuilder::new(snapshot.clone(), 10, false)
-        //     .range(None, Some(Key::from_raw(&[3u8])))
-        //     .build()
-        //     .unwrap();
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[1u8]), vec![1u8]))
-        // );
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[2u8]), vec![2u8]))
-        // );
-        // assert_eq!(scanner.next().unwrap(), None);
+        let entry = |key, ts| {
+            EntryBuilder::default()
+                .key(key)
+                .value(key)
+                .start_ts(ts)
+                .commit_ts(ts)
+                .build_commit(WriteType::Put, true)
+        };
 
-        // // Test right bound not specified.
-        // let mut scanner = ScannerBuilder::new(snapshot.clone(), 10, false)
-        //     .range(Some(Key::from_raw(&[5u8])), None)
-        //     .build()
-        //     .unwrap();
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[5u8]), vec![5u8]))
-        // );
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[6u8]), vec![6u8]))
-        // );
-        // assert_eq!(scanner.next().unwrap(), None);
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[3u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[4u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), None);
 
-        // // Test both bound not specified.
-        // let mut scanner = ScannerBuilder::new(snapshot.clone(), 10, false)
-        //     .range(None, None)
-        //     .build()
-        //     .unwrap();
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[1u8]), vec![1u8]))
-        // );
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[2u8]), vec![2u8]))
-        // );
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[3u8]), vec![3u8]))
-        // );
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[4u8]), vec![4u8]))
-        // );
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[5u8]), vec![5u8]))
-        // );
-        // assert_eq!(
-        //     scanner.next().unwrap(),
-        //     Some((Key::from_raw(&[6u8]), vec![6u8]))
-        // );
-        // assert_eq!(scanner.next().unwrap(), None);
+        // Test left bound not specified.
+        let mut scanner = ScannerBuilder::new(snapshot.clone(), 10, false)
+            .range(None, Some(Key::from_raw(&[3u8])))
+            .build_entry_scanner()
+            .unwrap();
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[1u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[2u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), None);
+
+        // Test right bound not specified.
+        let mut scanner = ScannerBuilder::new(snapshot.clone(), 10, false)
+            .range(Some(Key::from_raw(&[5u8])), None)
+            .build_entry_scanner()
+            .unwrap();
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[5u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[6u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), None);
+
+        // Test both bound not specified.
+        let mut scanner = ScannerBuilder::new(snapshot.clone(), 10, false)
+            .range(None, None)
+            .build_entry_scanner()
+            .unwrap();
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[1u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[2u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[3u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[4u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[5u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), Some(entry(&[6u8], 7)));
+        assert_eq!(scanner.next_entry().unwrap(), None);
     }
 }
