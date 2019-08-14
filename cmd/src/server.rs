@@ -277,18 +277,18 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
     // Register services.
     server
         .register_service(create_import_sst(import_service))
-        .unwrap_or_else(|| fatal!("failed to register import service",));
+        .map(|_| fatal!("failed to register import service",));
     server
         .register_service(create_debug(debug_service))
-        .unwrap_or_else(|| fatal!("failed to register debug service",));
+        .map(|_| fatal!("failed to register debug service",));
     if let Some(deadlock_service) = deadlock_service {
         server
             .register_service(create_deadlock(deadlock_service))
-            .unwrap_or_else(|| fatal!("failed to register deadlock service",));
+            .map(|_| fatal!("failed to register deadlock service",));
     }
     server
         .register_service(create_backup(backup_service))
-        .unwrap_or_else(|| fatal!("failed to register bacup service",));
+        .map(|_| fatal!("failed to register bacup service",));
 
     let trans = server.transport();
 
