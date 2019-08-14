@@ -32,12 +32,12 @@ impl Backup for Service {
         if let Err(status) = match Task::new(req, tx) {
             Ok(task) => self.scheduler.schedule(task).map_err(|e| {
                 RpcStatus::new(
-                    RpcStatusCode::GRPC_STATUS_INVALID_ARGUMENT,
+                    RpcStatusCode::INVALID_ARGUMENT,
                     Some(format!("{:?}", e)),
                 )
             }),
             Err(e) => Err(RpcStatus::new(
-                RpcStatusCode::GRPC_STATUS_UNKNOWN,
+                RpcStatusCode::UNKNOWN,
                 Some(format!("{:?}", e)),
             )),
         } {
@@ -53,7 +53,7 @@ impl Backup for Service {
             Err(e) => {
                 error!("backup send failed"; "error" => ?e);
                 Err(Error::RpcFailure(RpcStatus::new(
-                    RpcStatusCode::GRPC_STATUS_UNKNOWN,
+                    RpcStatusCode::UNKNOWN,
                     Some(format!("{:?}", e)),
                 )))
             }
