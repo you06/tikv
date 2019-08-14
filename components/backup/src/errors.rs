@@ -23,7 +23,7 @@ impl Into<ErrorPb> for Error {
             | Error::Txn(TxnError::Mvcc(MvccError::Engine(EngineError::Request(e)))) => {
                 err.set_region_error(e);
             }
-            Error::Txn(TxnError::Mvcc(MvccError::KeyIsLocked (info))) => {
+            Error::Txn(TxnError::Mvcc(MvccError::KeyIsLocked(info))) => {
                 let mut e = KeyError::new();
                 e.set_locked(info);
                 err.set_kv_error(e);

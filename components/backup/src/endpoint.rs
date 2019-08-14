@@ -43,8 +43,8 @@ impl fmt::Debug for Task {
         f.debug_struct("BackupTask")
             .field("start_ts", &self.start_ts)
             .field("end_ts", &self.end_ts)
-            .field("start_key", &self.start_key)
-            .field("end_key", &self.end_key)
+            .field("start_key", &hex::encode_upper(&self.start_key))
+            .field("end_key", &hex::encode_upper(&self.end_key))
             .finish()
     }
 }
@@ -113,9 +113,11 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                     let region = &info.region;
                     if !end_key.is_none() {
                         let end_slice = end_key.as_ref().unwrap().as_encoded().as_slice();
-                        if end_slice < region.get_start_key() {
+                        if end_slice <= region.get_start_key() {
                             // println!("break {:?}, {:?}", end_slice, region.get_start_key());
                             // We have reached the end.
+                            // The range is defined as [start, end) so break if
+                            // region start key is greater or equal to end key.
                             break;
                         }
                     }
@@ -143,6 +145,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                                 start_key.clone()
                             }
                         };
+                        assert!(!(skey == ekey && ekey.is_some()), "{:?} {:?}", skey, ekey);
                         let leader = find_peer(region, store_id).unwrap().to_owned();
                         let backup_range = BackupRange {
                             start_key: skey,
@@ -503,14 +506,14 @@ pub mod tests {
         };
 
         let case: Vec<(&[u8], &[u8], Vec<(&[u8], &[u8])>)> = vec![
-            (b"", b"1", vec![(b"", b"1"), (b"1", b"1")]),
+            (b"", b"1", vec![(b"", b"1")]),
             (b"", b"2", vec![(b"", b"1"), (b"1", b"2")]),
             (b"1", b"2", vec![(b"1", b"2")]),
-            (b"1", b"3", vec![(b"1", b"2"), (b"3", b"3")]),
+            (b"1", b"3", vec![(b"1", b"2")]),
             (b"1", b"4", vec![(b"1", b"2"), (b"3", b"4")]),
             (b"4", b"6", vec![]),
             (b"4", b"5", vec![]),
-            (b"2", b"7", vec![(b"3", b"4"), (b"7", b"7")]),
+            (b"2", b"7", vec![(b"3", b"4")]),
             (b"3", b"", vec![(b"3", b"4"), (b"7", b"")]),
             (b"5", b"", vec![(b"7", b"")]),
             (b"7", b"", vec![(b"7", b"")]),
