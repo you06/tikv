@@ -1,6 +1,5 @@
 // Copyright 2019 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::io::Read;
 use std::sync::*;
 use std::time::Duration;
 
@@ -20,8 +19,8 @@ use test_raftstore::*;
 use tikv_util::collections::HashMap;
 use tikv_util::worker::Worker;
 use tikv_util::HandyRwLock;
-
-use backup::{create_storage, name_to_cf, Storage, Task};
+use storage::*;
+use backup::{name_to_cf, Task};
 
 struct TestSuite {
     cluster: Cluster<ServerCluster>,

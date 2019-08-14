@@ -20,6 +20,7 @@ use tikv::storage::txn::{EntryBatch, Error as TxnError, Msg, Scanner, SnapshotSt
 use tikv::storage::{Key, Statistics};
 use tikv_util::worker::{Runnable, RunnableWithTimer};
 use tokio_threadpool::ThreadPool;
+use storage::*;
 
 use crate::*;
 
@@ -347,7 +348,7 @@ fn backup_file_name(store_id: u64, region: &Region) -> String {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::LocalStorage;
+    use storage::LocalStorage;
     use futures::{Future, Stream};
     use kvproto::metapb;
     use std::collections::BTreeMap;

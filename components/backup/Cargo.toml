@@ -22,17 +22,12 @@ futures = "0.1"
 tempfile = "3.0"
 tokio-threadpool = "0.1"
 grpcio = { version = "0.5.0-alpha.3", features = [ "openssl-vendored" ] }
-rand = "0.6.5"
 url = "2.0"
 quick-error = "1.2.2"
 hex = "0.3"
-
-rusoto_core = "0.40.0"
-rusoto_s3 = "0.40.0"
-rusoto_credential = "0.40.0"
+storage = { path = "../storage", features = ["s3"] }
 
 [dev-dependencies]
 test_util = { path = "../test_util" }
 test_raftstore = { path = "../test_raftstore" }
 uuid = { version = "0.6", features = [ "serde", "v4" ] }
-rusoto_mock = "0.40.0"

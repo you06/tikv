@@ -6,8 +6,9 @@ use kvproto::backup::File;
 use tikv::raftstore::store::keys;
 use tikv::storage::txn::TxnEntry;
 use tikv_util;
+use storage::Storage;
 
-use crate::{Error, Result, Storage};
+use crate::{Error, Result};
 
 pub struct BackupWriter {
     name: String,
