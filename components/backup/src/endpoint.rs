@@ -10,6 +10,7 @@ use kvproto::backup::*;
 use kvproto::kvrpcpb::{Context, IsolationLevel};
 use kvproto::metapb::*;
 use raft::StateRole;
+use storage::*;
 use tikv::raftstore::coprocessor::RegionInfoAccessor;
 use tikv::raftstore::store::util::find_peer;
 use tikv::server::transport::ServerRaftStoreRouter;
@@ -20,7 +21,6 @@ use tikv::storage::txn::{EntryBatch, Error as TxnError, Msg, Scanner, SnapshotSt
 use tikv::storage::{Key, Statistics};
 use tikv_util::worker::{Runnable, RunnableWithTimer};
 use tokio_threadpool::ThreadPool;
-use storage::*;
 
 use crate::*;
 
@@ -348,12 +348,13 @@ fn backup_file_name(store_id: u64, region: &Region) -> String {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use storage::LocalStorage;
     use futures::{Future, Stream};
     use kvproto::metapb;
     use std::collections::BTreeMap;
     use std::sync::mpsc::{channel, Receiver, Sender};
+    use storage::LocalStorage;
     use tempfile::TempDir;
+    use tikv::raftstore::coprocessor::RegionCollector;
     use tikv::raftstore::coprocessor::{RegionInfo, SeekRegionCallback};
     use tikv::raftstore::store::util::new_peer;
     use tikv::storage::kv::Result as EngineResult;
@@ -366,42 +367,37 @@ pub mod tests {
     #[derive(Clone)]
     pub struct MockRegionInfoProvider {
         // start_key -> (region_id, end_key)
-        regions: Arc<Mutex<BTreeMap<Vec<u8>, RegionInfo>>>,
+        regions: Arc<Mutex<RegionCollector>>,
     }
     impl MockRegionInfoProvider {
         pub fn new() -> Self {
             MockRegionInfoProvider {
-                regions: Arc::default(),
+                regions: Arc::new(Mutex::new(RegionCollector::new())),
             }
         }
         pub fn set_regions(&self, regions: Vec<(Vec<u8>, Vec<u8>, u64)>) {
             let mut map = self.regions.lock().unwrap();
-            let regions: BTreeMap<_, _> = regions
-                .into_iter()
-                .map(|(mut start_key, mut end_key, id)| {
-                    if !start_key.is_empty() {
-                        start_key = Key::from_raw(&start_key).into_encoded();
-                    }
-                    if !end_key.is_empty() {
-                        end_key = Key::from_raw(&end_key).into_encoded();
-                    }
-                    let mut r = metapb::Region::default();
-                    r.set_id(id);
-                    r.set_start_key(start_key.clone());
-                    r.set_end_key(end_key);
-                    r.mut_peers().push(new_peer(1, 1));
-                    let info = RegionInfo::new(r, StateRole::Leader);
-                    (start_key, info)
-                })
-                .collect();
-            *map = regions;
+            for (mut start_key, mut end_key, id) in regions {
+                if !start_key.is_empty() {
+                    start_key = Key::from_raw(&start_key).into_encoded();
+                }
+                if !end_key.is_empty() {
+                    end_key = Key::from_raw(&end_key).into_encoded();
+                }
+                let mut r = metapb::Region::default();
+                r.set_id(id);
+                r.set_start_key(start_key.clone());
+                r.set_end_key(end_key);
+                r.mut_peers().push(new_peer(1, 1));
+                map.create_region(r, StateRole::Leader);
+            }
         }
     }
     impl RegionInfoProvider for MockRegionInfoProvider {
         fn seek_region(&self, from: &[u8], callback: SeekRegionCallback) -> EngineResult<()> {
             let from = from.to_vec();
             let regions = self.regions.lock().unwrap();
-            callback(&mut regions.range(from..).map(|(_, v)| v));
+            regions.handle_seek_region(from, callback);
             Ok(())
         }
     }
@@ -439,10 +435,11 @@ pub mod tests {
             (b"".to_vec(), b"1".to_vec(), 1),
             (b"1".to_vec(), b"2".to_vec(), 2),
             (b"3".to_vec(), b"4".to_vec(), 3),
-            (b"7".to_vec(), b"".to_vec(), 4),
+            (b"7".to_vec(), b"9".to_vec(), 4),
+            (b"9".to_vec(), b"".to_vec(), 5),
         ]);
         let t = |start_key: &[u8], end_key: &[u8], expect: Vec<(&[u8], &[u8])>| {
-            // println!("{:?}", (start_key, end_key, expect.clone()));
+            // println!("t {:?}", (start_key, end_key, expect.clone()));
             let start_key = if start_key.is_empty() {
                 None
             } else {
@@ -477,7 +474,7 @@ pub mod tests {
 
         // Test whether responses contain correct range.
         let tt = |start_key: &[u8], end_key: &[u8], expect: Vec<(&[u8], &[u8])>| {
-            // println!("{:?}", (start_key, end_key, expect.clone()));
+            // println!("tt {:?}", (start_key, end_key, expect.clone()));
             let tmp = TempDir::new().unwrap();
             let ls = LocalStorage::new(tmp.path()).unwrap();
             let (tx, rx) = unbounded();
@@ -515,13 +512,21 @@ pub mod tests {
             (b"4", b"6", vec![]),
             (b"4", b"5", vec![]),
             (b"2", b"7", vec![(b"3", b"4")]),
-            (b"3", b"", vec![(b"3", b"4"), (b"7", b"")]),
-            (b"5", b"", vec![(b"7", b"")]),
-            (b"7", b"", vec![(b"7", b"")]),
+            (b"3", b"", vec![(b"3", b"4"), (b"7", b"9"), (b"9", b"")]),
+            (b"5", b"", vec![(b"7", b"9"), (b"9", b"")]),
+            (b"7", b"", vec![(b"7", b"9"), (b"9", b"")]),
+            (b"8", b"91", vec![(b"8", b"9"), (b"9", b"91")]),
+            (b"8", b"", vec![(b"8", b"9"), (b"9", b"")]),
             (
                 b"",
                 b"",
-                vec![(b"", b"1"), (b"1", b"2"), (b"3", b"4"), (b"7", b"")],
+                vec![
+                    (b"", b"1"),
+                    (b"1", b"2"),
+                    (b"3", b"4"),
+                    (b"7", b"9"),
+                    (b"9", b""),
+                ],
             ),
         ];
         for (start_key, end_key, ranges) in case {

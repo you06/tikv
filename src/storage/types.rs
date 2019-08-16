@@ -2,7 +2,7 @@
 
 //! Core data types.
 
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{self, Display, Debug, Formatter};
 use std::u64;
 
 use byteorder::{ByteOrder, NativeEndian};
@@ -43,7 +43,7 @@ pub struct MvccInfo {
 /// Orthogonal to binary representation, keys may or may not embed a timestamp,
 /// but this information is transparent to this type, the caller must use it
 /// consistently.
-#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Key(Vec<u8>);
 
 /// Core functions for `Key`.
@@ -215,6 +215,12 @@ impl Clone for Key {
 impl Display for Key {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         self.0.write_hex_upper(f)
+    }
+}
+
+impl Debug for Key {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Key").field(&hex::encode_upper(&self.0)).finish()
     }
 }
 
