@@ -19,6 +19,9 @@ use url::Url;
 mod local;
 pub use local::LocalStorage;
 
+mod noop;
+pub use noop::NoopStorage;
+
 #[cfg(feature = "s3")]
 mod s3;
 #[cfg(feature = "s3")]
@@ -37,6 +40,9 @@ pub fn create_storage(url: &str) -> io::Result<Arc<dyn Storage>> {
         LocalStorage::SCHEME => {
             let p = Path::new(url.path());
             LocalStorage::new(p).map(|s| Arc::new(s) as _)
+        }
+        NoopStorage::SCHEME => {
+            Ok(Arc::new(NoopStorage::new()) as _)
         }
         #[cfg(feature = "s3")]
         S3Storage::SCHEME => S3Storage::new(url).map(|s| Arc::new(s) as _),
