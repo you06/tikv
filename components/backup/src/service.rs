@@ -31,10 +31,7 @@ impl Backup for Service {
         let (tx, rx) = mpsc::unbounded();
         if let Err(status) = match Task::new(req, tx) {
             Ok(task) => self.scheduler.schedule(task).map_err(|e| {
-                RpcStatus::new(
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    Some(format!("{:?}", e)),
-                )
+                RpcStatus::new(RpcStatusCode::INVALID_ARGUMENT, Some(format!("{:?}", e)))
             }),
             Err(e) => Err(RpcStatus::new(
                 RpcStatusCode::UNKNOWN,

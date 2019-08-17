@@ -7,6 +7,7 @@ use futures::sync::mpsc as future_mpsc;
 use futures::{Future, Stream};
 use grpcio::{ChannelBuilder, Environment};
 
+use backup::{name_to_cf, Task};
 use engine::CF_DEFAULT;
 use engine::*;
 use kvproto::backup::*;
@@ -14,13 +15,12 @@ use kvproto::import_sstpb::*;
 use kvproto::kvrpcpb::*;
 use kvproto::raft_cmdpb::{CmdType, RaftCmdRequest, RaftRequestHeader, Request};
 use kvproto::tikvpb_grpc::TikvClient;
+use storage::*;
 use tempfile::Builder;
 use test_raftstore::*;
 use tikv_util::collections::HashMap;
 use tikv_util::worker::Worker;
 use tikv_util::HandyRwLock;
-use storage::*;
-use backup::{name_to_cf, Task};
 
 struct TestSuite {
     cluster: Cluster<ServerCluster>,
