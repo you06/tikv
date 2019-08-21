@@ -186,6 +186,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
         let snapshot = match self.engine.snapshot(&ctx) {
             Ok(s) => s,
             Err(e) => {
+                error!("backup snapshot failed"; "error" => ?e);
                 return tx.send((brange, Err(e.into()))).unwrap();
             }
         };
@@ -208,11 +209,13 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
             let mut writer = match BackupWriter::new(db, &name) {
                 Ok(w) => w,
                 Err(e) => {
+                    error!("backup writer failed"; "error" => ?e);
                     return tx.send((brange, Err(e))).map_err(|_| ());
                 }
             };
             loop {
                 if let Err(e) = scanner.scan_entries(&mut batch) {
+                    error!("backup scan entries failed"; "error" => ?e);
                     return tx.send((brange, Err(e.into()))).map_err(|_| ());
                 };
                 if batch.len() == 0 {
@@ -221,6 +224,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                 debug!("backup scan entries"; "len" => batch.len());
                 // Build sst files.
                 if let Err(e) = writer.write(batch.drain()) {
+                    error!("backup build sst failed"; "error" => ?e);
                     return tx.send((brange, Err(e))).map_err(|_| ());
                 }
             }
@@ -228,6 +232,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
             let files = match writer.save(&storage) {
                 Ok(files) => files,
                 Err(e) => {
+                    error!("backup save file failed"; "error" => ?e);
                     return tx.send((brange, Err(e))).map_err(|_| ());
                 }
             };
