@@ -107,7 +107,7 @@ impl<S: Snapshot> ScannerBuilder<S> {
             self.0,
             lock_cursor,
             write_cursor,
-        )))
+        )?))
     }
 }
 

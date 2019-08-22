@@ -1,5 +1,7 @@
 // Copyright 2018 TiKV Project Authors. Licensed under Apache-2.0.
 
+//! A dedicate scanner that outputs content in each CF.
+
 use std::cmp::Ordering;
 
 use engine::CF_DEFAULT;
@@ -20,12 +22,14 @@ use super::ScannerConfig;
 /// isolation level is SI, locks will be checked first.
 ///
 /// Use `ScannerBuilder` to build `EntryScanner`.
+///
+/// Note: The implementation is almost the same as `ForwardScanner`, made a few
+///       adjuestment to output content in each cf.
 pub struct EntryScanner<S: Snapshot> {
     cfg: ScannerConfig<S>,
     lock_cursor: Cursor<S::Iter>,
     write_cursor: Cursor<S::Iter>,
-    /// `default cursor` is lazy created only when it's needed.
-    default_cursor: Option<Cursor<S::Iter>>,
+    default_cursor: Cursor<S::Iter>,
     /// Is iteration started
     is_started: bool,
     statistics: Statistics,
@@ -33,18 +37,21 @@ pub struct EntryScanner<S: Snapshot> {
 
 impl<S: Snapshot> EntryScanner<S> {
     pub fn new(
-        cfg: ScannerConfig<S>,
+        mut cfg: ScannerConfig<S>,
         lock_cursor: Cursor<S::Iter>,
         write_cursor: Cursor<S::Iter>,
-    ) -> EntryScanner<S> {
-        EntryScanner {
+    ) -> Result<EntryScanner<S>> {
+        // Note: Create a default cf cursor will take key range, so we need to
+        //       ensure the default cursor is created after lock and write.
+        let default_cursor = cfg.create_cf_cursor(CF_DEFAULT)?;
+        Ok(EntryScanner {
             cfg,
             lock_cursor,
             write_cursor,
+            default_cursor,
             statistics: Statistics::default(),
-            default_cursor: None,
             is_started: false,
-        }
+        })
     }
 
     /// Take out and reset the statistics collected so far.
@@ -271,7 +278,7 @@ impl<S: Snapshot> EntryScanner<S> {
 
             match write.write_type {
                 WriteType::Put => return Ok(Some(self.load_data_and_write(write, user_key)?)),
-                // TODO: we may want to surface delete and rollback later.
+                // TODO: we may want to output delete later.
                 WriteType::Delete => return Ok(None),
                 WriteType::Lock | WriteType::Rollback => {
                     // Continue iterate next `write`.
@@ -311,8 +318,7 @@ impl<S: Snapshot> EntryScanner<S> {
             })
         } else {
             // Value is in the default CF.
-            self.ensure_default_cursor()?;
-            let default_cursor = self.default_cursor.as_mut().unwrap();
+            let default_cursor = &mut self.default_cursor;
             let value = super::util::near_load_data_by_write(
                 default_cursor,
                 user_key,
@@ -364,16 +370,6 @@ impl<S: Snapshot> EntryScanner<S> {
             &mut self.statistics.write,
         )?;
 
-        Ok(())
-    }
-
-    /// Create the default cursor if it doesn't exist.
-    #[inline]
-    fn ensure_default_cursor(&mut self) -> Result<()> {
-        if self.default_cursor.is_some() {
-            return Ok(());
-        }
-        self.default_cursor = Some(self.cfg.create_cf_cursor(CF_DEFAULT)?);
         Ok(())
     }
 }
