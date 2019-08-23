@@ -17,7 +17,10 @@ use tikv::server::transport::ServerRaftStoreRouter;
 use tikv::storage::kv::{
     Engine, Error as EngineError, RegionInfoProvider, ScanMode, StatisticsSummary,
 };
-use tikv::storage::txn::{EntryBatch, Error as TxnError, Msg, Scanner, SnapshotStore, Store};
+use tikv::storage::txn::{
+    EntryBatch, Error as TxnError, Msg, Scanner, SnapshotStore, Store, TxnEntryScanner,
+    TxnEntryStore,
+};
 use tikv::storage::{Key, Statistics};
 use tikv_util::worker::{Runnable, RunnableWithTimer};
 use tokio_threadpool::ThreadPool;
