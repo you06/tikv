@@ -21,12 +21,16 @@ extern crate slog;
 extern crate slog_global;
 #[macro_use]
 extern crate quick_error;
+#[macro_use]
+extern crate serde_derive;
 
+mod config;
 mod endpoint;
 mod errors;
 mod service;
 mod writer;
 
+pub use config::Config;
 pub use endpoint::{Endpoint, Task};
 pub use errors::{Error, Result};
 pub use service::Service;

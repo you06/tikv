@@ -7,7 +7,7 @@ use futures::sync::mpsc as future_mpsc;
 use futures::{Future, Stream};
 use grpcio::{ChannelBuilder, Environment};
 
-use backup::{name_to_cf, Task};
+use backup::{name_to_cf, Config, Task};
 use engine::CF_DEFAULT;
 use engine::*;
 use kvproto::backup::*;
@@ -41,17 +41,18 @@ impl TestSuite {
         let mut endpoints = HashMap::default();
         for (id, engines) in &cluster.engines {
             // Create and run backup endpoints.
-            let id = *id;
+            let mut config = Config::default();
+            config.store_id = *id;
             let sim = cluster.sim.rl();
             let backup_endpoint = backup::Endpoint::new(
-                id,
+                config,
                 sim.storages[&id].clone(),
                 sim.region_info_accessors[&id].clone(),
                 engines.kv.clone(),
             );
             let mut worker = Worker::new(format!("backup-{}", id));
             worker.start(backup_endpoint).unwrap();
-            endpoints.insert(id, worker);
+            endpoints.insert(*id, worker);
         }
 
         let region_id = 1;

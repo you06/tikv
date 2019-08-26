@@ -23,7 +23,7 @@ use tikv::storage::txn::{
 };
 use tikv::storage::{Key, Statistics};
 use tikv_util::worker::{Runnable, RunnableWithTimer};
-use tokio_threadpool::ThreadPool;
+use tokio_threadpool::{Builder as ThreadPoolBuilder, ThreadPool};
 
 use crate::*;
 
@@ -89,13 +89,17 @@ pub struct Endpoint<E: Engine, R: RegionInfoProvider> {
 }
 
 impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
-    pub fn new(store_id: u64, engine: E, region_info: R, db: Arc<DB>) -> Endpoint<E, R> {
+    pub fn new(cfg: Config, engine: E, region_info: R, db: Arc<DB>) -> Endpoint<E, R> {
+        let workers = ThreadPoolBuilder::new()
+            .name_prefix("backworker")
+            .pool_size(cfg.concurrency as _)
+            .build();
         Endpoint {
-            store_id,
+            store_id: cfg.store_id,
             engine,
             region_info,
             // TODO: support more config.
-            workers: ThreadPool::new(),
+            workers,
             db,
         }
     }
@@ -418,9 +422,13 @@ pub mod tests {
             .build()
             .unwrap();
         let db = rocks.get_rocksdb();
+        let cfg = Config {
+            store_id: 1,
+            ..Default::default()
+        };
         (
             temp,
-            Endpoint::new(1, rocks, MockRegionInfoProvider::new(), db),
+            Endpoint::new(cfg, rocks, MockRegionInfoProvider::new(), db),
         )
     }
 
