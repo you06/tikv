@@ -2,6 +2,7 @@
 
 #![recursion_limit = "200"]
 #![allow(unused_imports)]
+#![feature(duration_float)]
 
 #[macro_use(
     kv,
@@ -27,6 +28,7 @@ extern crate serde_derive;
 mod config;
 mod endpoint;
 mod errors;
+mod metrics;
 mod service;
 mod writer;
 

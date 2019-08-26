@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use engine::rocks::{SstWriter, SstWriterBuilder};
 use engine::{CF_DEFAULT, CF_WRITE, DB};
@@ -8,6 +9,7 @@ use tikv::raftstore::store::keys;
 use tikv::storage::txn::TxnEntry;
 use tikv_util;
 
+use crate::metrics::*;
 use crate::{Error, Result};
 
 pub struct BackupWriter {
@@ -74,6 +76,7 @@ impl BackupWriter {
     pub fn save(mut self, storage: &dyn Storage) -> Result<Vec<File>> {
         let name = self.name;
         let save_and_build_file = |cf, mut contents: &[u8]| -> Result<File> {
+            BACKUP_RANGE_SIZE_HISTOGRAM.observe(contents.len() as _);
             let name = format!("{}_{}", name, cf);
             let checksum = tikv_util::file::calc_crc32_bytes(contents);
             storage.write(&name, &mut contents as &mut dyn std::io::Read)?;
@@ -82,6 +85,7 @@ impl BackupWriter {
             file.set_name(name);
             Ok(file)
         };
+        let start = Instant::now();
         let mut files = Vec::with_capacity(2);
         let mut buf = Vec::new();
         if self.default_written {
@@ -99,6 +103,9 @@ impl BackupWriter {
             let write = save_and_build_file(CF_WRITE, &mut buf)?;
             files.push(write);
         }
+        BACKUP_RANGE_HISTOGRAM_VEC
+            .with_label_values(&["save"])
+            .observe(start.elapsed().as_secs_f64());
         Ok(files)
     }
 }

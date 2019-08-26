@@ -25,6 +25,7 @@ use tikv::storage::{Key, Statistics};
 use tikv_util::worker::{Runnable, RunnableWithTimer};
 use tokio_threadpool::{Builder as ThreadPoolBuilder, ThreadPool};
 
+use crate::metrics::*;
 use crate::*;
 
 pub struct Task {
@@ -220,6 +221,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                     return tx.send((brange, Err(e))).map_err(|_| ());
                 }
             };
+            let start = Instant::now();
             loop {
                 if let Err(e) = scanner.scan_entries(&mut batch) {
                     error!("backup scan entries failed"; "error" => ?e);
@@ -235,6 +237,9 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                     return tx.send((brange, Err(e))).map_err(|_| ());
                 }
             }
+            BACKUP_RANGE_HISTOGRAM_VEC
+                .with_label_values(&["scan"])
+                .observe(start.elapsed().as_secs_f64());
             // Save sst files to storage.
             let files = match writer.save(&storage) {
                 Ok(files) => files,
@@ -314,8 +319,10 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                 break;
             }
         }
+        let duration = start.elapsed();
+        BACKUP_REQUEST_HISTOGRAM.observe(duration.as_secs_f64());
         info!("backup finished";
-            "take" => ?start.elapsed(),
+            "take" => ?duration,
             "summary" => ?summary);
     }
 }
