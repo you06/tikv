@@ -7,8 +7,7 @@ use super::Storage;
 /// A storage saves files into void.
 /// It is mainly for test use.
 #[derive(Clone)]
-pub struct NoopStorage {
-}
+pub struct NoopStorage {}
 
 impl NoopStorage {
     /// The url scheme of the `NoopStorage`.
@@ -17,8 +16,7 @@ impl NoopStorage {
     /// Create a new noop storage in the given path.
     pub fn new() -> NoopStorage {
         info!("create noop storage");
-        NoopStorage {
-        }
+        NoopStorage {}
     }
 }
 

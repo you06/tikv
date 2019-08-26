@@ -234,8 +234,7 @@ impl Simulator for ServerCluster {
         }
         self.region_info_accessors
             .insert(node_id, region_info_accessor);
-        self.importers
-            .insert(node_id, importer);
+        self.importers.insert(node_id, importer);
         server.start(server_cfg, security_mgr).unwrap();
 
         self.metas.insert(

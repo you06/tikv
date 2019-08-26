@@ -41,9 +41,7 @@ pub fn create_storage(url: &str) -> io::Result<Arc<dyn Storage>> {
             let p = Path::new(url.path());
             LocalStorage::new(p).map(|s| Arc::new(s) as _)
         }
-        NoopStorage::SCHEME => {
-            Ok(Arc::new(NoopStorage::new()) as _)
-        }
+        NoopStorage::SCHEME => Ok(Arc::new(NoopStorage::new()) as _),
         #[cfg(feature = "s3")]
         S3Storage::SCHEME => S3Storage::new(url).map(|s| Arc::new(s) as _),
         other => {

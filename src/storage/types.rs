@@ -2,7 +2,7 @@
 
 //! Core data types.
 
-use std::fmt::{self, Display, Debug, Formatter};
+use std::fmt::{self, Debug, Display, Formatter};
 use std::u64;
 
 use byteorder::{ByteOrder, NativeEndian};
@@ -220,7 +220,9 @@ impl Display for Key {
 
 impl Debug for Key {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Key").field(&hex::encode_upper(&self.0)).finish()
+        f.debug_tuple("Key")
+            .field(&hex::encode_upper(&self.0))
+            .finish()
     }
 }
 

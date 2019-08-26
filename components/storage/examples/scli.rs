@@ -62,9 +62,9 @@ fn main() {
         let mut f = std::fs::File::create(file_path).unwrap();
         let mut reader = s.read(name).unwrap();
         std::io::copy(&mut reader, &mut f).unwrap();
-    }else {
+    } else {
         let _ = App::from_yaml(yaml).print_help();
-        return
+        return;
     }
     println!("done");
 }

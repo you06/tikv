@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use super::util::get_fastest_supported_compression_type;
-use super::{ColumnFamilyOptions, SstFileWriter, DBCompressionType, Env, EnvOptions, ExternalSstFileInfo, DB};
+use super::{
+    ColumnFamilyOptions, DBCompressionType, Env, EnvOptions, ExternalSstFileInfo, SstFileWriter, DB,
+};
 use crate::{CfName, CF_DEFAULT};
 
 /// A builder builds a SstWriter.

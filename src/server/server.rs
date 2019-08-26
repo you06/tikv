@@ -76,11 +76,11 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver + 'static> Server<T, S> {
         let thread_load = Arc::new(ThreadLoad::with_threshold(cfg.heavy_load_threshold));
 
         let env = Arc::new(
-                EnvBuilder::new()
-                    .cq_count(cfg.grpc_concurrency)
-                    .name_prefix(thd_name!(GRPC_THREAD_PREFIX))
-                    .build(),
-            );
+            EnvBuilder::new()
+                .cq_count(cfg.grpc_concurrency)
+                .name_prefix(thd_name!(GRPC_THREAD_PREFIX))
+                .build(),
+        );
         let snap_worker = Worker::new("snap-handler");
 
         let kv_service = KvService::new(
