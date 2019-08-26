@@ -101,7 +101,7 @@ mod tests {
         let engine = endpoint.engine.clone();
         endpoint.region_info.set_regions(vec![
             (b"".to_vec(), b"2".to_vec(), 1),
-            (b"2".to_vec(), b"5".to_vec(), 1),
+            (b"2".to_vec(), b"5".to_vec(), 2),
         ]);
 
         let mut ts = 1;
