@@ -134,11 +134,15 @@ fn main() {
         process::exit(0);
     }
 
+    let mut raw = String::default();
     let mut config = matches
         .value_of("config")
-        .map_or_else(TiKvConfig::default, |path| TiKvConfig::from_file(&path));
+        .map_or_else(TiKvConfig::default, |path| {
+            raw = std::fs::read_to_string(&path).unwrap();
+            TiKvConfig::from_file(&path)
+        });
 
     cmd::setup::overwrite_config_with_cmd_args(&mut config, &matches);
 
-    cmd::server::run_tikv(config);
+    cmd::server::run_tikv(config, raw);
 }

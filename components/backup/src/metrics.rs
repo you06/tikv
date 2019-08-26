@@ -15,9 +15,10 @@ lazy_static! {
         &["type"]
     )
     .unwrap();
-    pub static ref BACKUP_RANGE_SIZE_HISTOGRAM: Histogram = register_histogram!(
+    pub static ref BACKUP_RANGE_SIZE_HISTOGRAM_VEC: HistogramVec = register_histogram_vec!(
         "tikv_backup_range_size_bytes",
         "Bucketed histogram of backup range size",
+        &["cf"],
         exponential_buckets(32.0, 2.0, 20).unwrap()
     )
     .unwrap();

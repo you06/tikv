@@ -76,7 +76,9 @@ impl BackupWriter {
     pub fn save(mut self, storage: &dyn Storage) -> Result<Vec<File>> {
         let name = self.name;
         let save_and_build_file = |cf, mut contents: &[u8]| -> Result<File> {
-            BACKUP_RANGE_SIZE_HISTOGRAM.observe(contents.len() as _);
+            BACKUP_RANGE_SIZE_HISTOGRAM_VEC
+                .with_label_values(&[cf])
+                .observe(contents.len() as _);
             let name = format!("{}_{}", name, cf);
             let checksum = tikv_util::file::calc_crc32_bytes(contents);
             storage.write(&name, &mut contents as &mut dyn std::io::Read)?;

@@ -42,7 +42,7 @@ use tikv_util::worker::FutureWorker;
 
 const RESERVED_OPEN_FDS: u64 = 1000;
 
-pub fn run_tikv(mut config: TiKvConfig) {
+pub fn run_tikv(mut config: TiKvConfig, raw: String) {
     if let Err(e) = check_and_persist_critical_config(&config) {
         fatal!("critical config check failed: {}", e);
     }
@@ -88,10 +88,15 @@ pub fn run_tikv(mut config: TiKvConfig) {
     );
 
     let _m = Monitor::default();
-    run_raft_server(pd_client, &config, security_mgr);
+    run_raft_server(pd_client, &config, security_mgr, raw);
 }
 
-fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<SecurityManager>) {
+fn run_raft_server(
+    pd_client: RpcClient,
+    cfg: &TiKvConfig,
+    security_mgr: Arc<SecurityManager>,
+    raw: String,
+) {
     let store_path = Path::new(&cfg.storage.data_dir);
     let lock_path = store_path.join(Path::new("LOCK"));
     let db_path = store_path.join(Path::new(DEFAULT_ROCKSDB_SUB_DIR));
@@ -258,7 +263,20 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
     let debug_service = DebugService::new(engines.clone(), raft_router.clone());
 
     // Create Backup service.
-    let mut backup_worker = tikv_util::worker::Worker::new("backup");
+    let raw_toml: toml::Value = raw
+        .parse()
+        .unwrap_or_else(|e| fatal!("failed to parse config: {}", e));
+    let backup_str = raw_toml
+        .as_table()
+        .unwrap()
+        .get("backup")
+        .map_or_else(String::new, |value| {
+            toml::to_string(&value).unwrap_or_else(|e| fatal!("failed to parse config: {}", e))
+        });
+    let mut backup_cfg: backup::Config =
+        toml::from_str(&backup_str).unwrap_or_else(|e| fatal!("failed to parse config: {}", e));
+
+    let mut backup_worker = tikv_util::worker::Worker::new("backup-endpoint");
     let backup_scheduler = backup_worker.scheduler();
     let backup_service = backup::Service::new(backup_scheduler);
 
@@ -315,8 +333,9 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
     initial_metric(&cfg.metric, Some(node.id()));
 
     // Start backup endpoint.
+    backup_cfg.store_id = node.id();
     let backup_endpoint = backup::Endpoint::new(
-        node.id(),
+        backup_cfg,
         engine.clone(),
         region_info_accessor.clone(),
         engines.kv.clone(),
