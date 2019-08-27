@@ -40,17 +40,20 @@ use tikv_util::security::SecurityManager;
 use tikv_util::time::Monitor;
 use tikv_util::worker::FutureWorker;
 
+use crate::config::Config;
+
 const RESERVED_OPEN_FDS: u64 = 1000;
 
-pub fn run_tikv(mut config: TiKvConfig, raw: String) {
-    if let Err(e) = check_and_persist_critical_config(&config) {
+pub fn run_tikv(mut cfg: Config) {
+    let config = &mut cfg.tikv_cfg;
+    if let Err(e) = check_and_persist_critical_config(config) {
         fatal!("critical config check failed: {}", e);
     }
 
     // Sets the global logger ASAP.
     // It is okay to use the config w/o `validate()`,
     // because `initial_logger()` handles various conditions.
-    initial_logger(&config);
+    initial_logger(config);
     tikv_util::set_panic_hook(false, &config.storage.data_dir);
 
     // Print version information.
@@ -88,15 +91,11 @@ pub fn run_tikv(mut config: TiKvConfig, raw: String) {
     );
 
     let _m = Monitor::default();
-    run_raft_server(pd_client, &config, security_mgr, raw);
+    run_raft_server(pd_client, &cfg, security_mgr);
 }
 
-fn run_raft_server(
-    pd_client: RpcClient,
-    cfg: &TiKvConfig,
-    security_mgr: Arc<SecurityManager>,
-    raw: String,
-) {
+fn run_raft_server(pd_client: RpcClient, config: &Config, security_mgr: Arc<SecurityManager>) {
+    let cfg = &config.tikv_cfg;
     let store_path = Path::new(&cfg.storage.data_dir);
     let lock_path = store_path.join(Path::new("LOCK"));
     let db_path = store_path.join(Path::new(DEFAULT_ROCKSDB_SUB_DIR));
@@ -263,19 +262,7 @@ fn run_raft_server(
     let debug_service = DebugService::new(engines.clone(), raft_router.clone());
 
     // Create Backup service.
-    let raw_toml: toml::Value = raw
-        .parse()
-        .unwrap_or_else(|e| fatal!("failed to parse config: {}", e));
-    let backup_str = raw_toml
-        .as_table()
-        .unwrap()
-        .get("backup")
-        .map_or_else(String::new, |value| {
-            toml::to_string(&value).unwrap_or_else(|e| fatal!("failed to parse config: {}", e))
-        });
-    let mut backup_cfg: backup::Config =
-        toml::from_str(&backup_str).unwrap_or_else(|e| fatal!("failed to parse config: {}", e));
-
+    let mut backup_cfg = config.backup.clone();
     let mut backup_worker = tikv_util::worker::Worker::new("backup-endpoint");
     let backup_scheduler = backup_worker.scheduler();
     let backup_service = backup::Service::new(backup_scheduler);
@@ -335,7 +322,7 @@ fn run_raft_server(
     // Start backup endpoint.
     backup_cfg.store_id = node.id();
     let backup_endpoint = backup::Endpoint::new(
-        backup_cfg,
+        backup_cfg.clone(),
         engine.clone(),
         region_info_accessor.clone(),
         engines.kv.clone(),

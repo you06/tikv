@@ -5,10 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono;
 use clap::ArgMatches;
-
 use tikv::config::{MetricConfig, TiKvConfig};
 use tikv_util::collections::HashMap;
 use tikv_util::{self, logger};
+
+use crate::config::Config;
 
 // A workaround for checking if log is initialized.
 pub static LOG_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -77,7 +78,8 @@ pub fn initial_metric(cfg: &MetricConfig, node_id: Option<u64>) {
 }
 
 #[allow(dead_code)]
-pub fn overwrite_config_with_cmd_args(config: &mut TiKvConfig, matches: &ArgMatches<'_>) {
+pub fn overwrite_config_with_cmd_args(config: &mut Config, matches: &ArgMatches<'_>) {
+    let config = &mut config.tikv_cfg;
     if let Some(level) = matches.value_of("log-level") {
         config.log_level = logger::get_level_by_string(level).unwrap();
     }

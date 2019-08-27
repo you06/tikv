@@ -1,5 +1,9 @@
 // Copyright 2017 TiKV Project Authors. Licensed under Apache-2.0.
 
+use std::error::Error;
+use std::fs;
+use std::path::Path;
+
 use backup::Config as BackupConfig;
 use tikv::config::TiKvConfig;
 
@@ -20,6 +24,22 @@ impl Default for Config {
             tikv_cfg: TiKvConfig::default(),
             backup: BackupConfig::default(),
         }
+    }
+}
+
+impl Config {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Self {
+        (|| -> Result<Self, Box<dyn Error>> {
+            let s = fs::read_to_string(&path)?;
+            Ok(toml::from_str(&s)?)
+        })()
+        .unwrap_or_else(|e| {
+            panic!(
+                "invalid auto generated configuration file {}, err {}",
+                path.as_ref().display(),
+                e
+            );
+        })
     }
 }
 
