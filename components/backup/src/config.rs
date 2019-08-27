@@ -17,6 +17,12 @@ pub struct Config {
     pub concurrency: u64,
 }
 
+impl Config {
+    pub fn is_default(cfg: &Config) -> bool {
+        *cfg == Config::default()
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
