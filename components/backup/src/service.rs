@@ -1,3 +1,5 @@
+use std::sync::atomic::*;
+
 use futures::future::*;
 use futures::prelude::*;
 use futures::sync::mpsc;
@@ -27,12 +29,16 @@ impl Backup for Service {
         req: BackupRequest,
         sink: ServerStreamingSink<BackupResponse>,
     ) {
+        let mut cancel = None;
         // TODO: make it a bounded channel.
         let (tx, rx) = mpsc::unbounded();
         if let Err(status) = match Task::new(req, tx) {
-            Ok(task) => self.scheduler.schedule(task).map_err(|e| {
-                RpcStatus::new(RpcStatusCode::INVALID_ARGUMENT, Some(format!("{:?}", e)))
-            }),
+            Ok((task, c)) => {
+                cancel = Some(c);
+                self.scheduler.schedule(task).map_err(|e| {
+                    RpcStatus::new(RpcStatusCode::INVALID_ARGUMENT, Some(format!("{:?}", e)))
+                })
+            }
             Err(e) => Err(RpcStatus::new(
                 RpcStatusCode::UNKNOWN,
                 Some(format!("{:?}", e)),
@@ -60,8 +66,12 @@ impl Backup for Service {
                 .map(|_s /* the sink */| {
                     info!("backup send half closed");
                 })
-                .map_err(|e| {
-                    error!("backup send failed"; "error" => ?e);
+                .map_err(move |e| {
+                    if let Some(c) = cancel {
+                        // Cancel the running task.
+                        c.store(true, Ordering::SeqCst);
+                    }
+                    error!("backup canceled"; "error" => ?e);
                 }),
         );
     }
@@ -153,5 +163,26 @@ mod tests {
         let task = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         // A stopped remote must not cause panic.
         endpoint.handle_backup_task(task.unwrap());
+
+        // Set an unique path to avoid AlreadyExists error.
+        req.set_path(format!(
+            "local://{}",
+            tmp.path().join(format!("{}", alloc_ts())).display()
+        ));
+        let stream = client.backup(&req).unwrap();
+        let task = rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        // Drop stream without start receiving will cause cancel error.
+        drop(stream);
+        // Wait util the task is canceled in map_err.
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+            if task.resp.unbounded_send(Default::default()).is_err() {
+                break;
+            }
+        }
+        // The task should be canceled.
+        assert!(task.has_canceled());
+        // A stopped remote must not cause panic.
+        endpoint.handle_backup_task(task);
     }
 }

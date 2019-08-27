@@ -140,7 +140,7 @@ impl TestSuite {
         req.set_path(path.clone());
         let (tx, rx) = future_mpsc::unbounded();
         for end in self.endpoints.values() {
-            let task = Task::new(req.clone(), tx.clone()).unwrap();
+            let (task, _) = Task::new(req.clone(), tx.clone()).unwrap();
             end.schedule(task).unwrap();
         }
         rx

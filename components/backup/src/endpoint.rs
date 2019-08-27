@@ -1,5 +1,6 @@
 use std::cmp;
 use std::fmt;
+use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 
@@ -35,7 +36,9 @@ pub struct Task {
     end_ts: u64,
 
     storage: Arc<dyn Storage>,
-    resp: UnboundedSender<BackupResponse>,
+    pub(crate) resp: UnboundedSender<BackupResponse>,
+
+    cancel: Arc<AtomicBool>,
 }
 
 impl fmt::Display for Task {
@@ -55,20 +58,32 @@ impl fmt::Debug for Task {
 }
 
 impl Task {
-    pub fn new(req: BackupRequest, resp: UnboundedSender<BackupResponse>) -> Result<Task> {
+    pub fn new(
+        req: BackupRequest,
+        resp: UnboundedSender<BackupResponse>,
+    ) -> Result<(Task, Arc<AtomicBool>)> {
         let start_key = req.get_start_key().to_owned();
         let end_key = req.get_end_key().to_owned();
         let start_ts = req.get_start_version();
         let end_ts = req.get_end_version();
         let storage = create_storage(req.get_path())?;
-        Ok(Task {
-            start_key,
-            end_key,
-            start_ts,
-            end_ts,
-            resp,
-            storage,
-        })
+        let cancel = Arc::new(AtomicBool::new(false));
+        Ok((
+            Task {
+                start_key,
+                end_key,
+                start_ts,
+                end_ts,
+                resp,
+                storage,
+                cancel: cancel.clone(),
+            },
+            cancel,
+        ))
+    }
+
+    pub fn has_canceled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
     }
 }
 
@@ -78,6 +93,14 @@ pub struct BackupRange {
     end_key: Option<Key>,
     region: Region,
     leader: Peer,
+
+    cancel: Arc<AtomicBool>,
+}
+
+impl BackupRange {
+    fn has_canceled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
 }
 
 pub struct Endpoint<E: Engine, R: RegionInfoProvider> {
@@ -109,6 +132,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
         &self,
         start_key: Option<Key>,
         end_key: Option<Key>,
+        cancel: Arc<AtomicBool>,
     ) -> mpsc::Receiver<BackupRange> {
         let store_id = self.store_id;
         let (tx, rx) = mpsc::channel();
@@ -161,6 +185,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                             end_key: ekey,
                             region: region.clone(),
                             leader,
+                            cancel: cancel.clone(),
                         };
                         tx.send(backup_range).unwrap();
                     }
@@ -201,6 +226,10 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
         let db = self.db.clone();
         let store_id = self.store_id;
         self.workers.spawn(lazy(move || {
+            if brange.has_canceled() {
+                warn!("backup task has canceled"; "range" => ?brange);
+                return Ok(());
+            }
             let snap_store = SnapshotStore::new(
                 snapshot,
                 backup_ts,
@@ -265,7 +294,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
         } else {
             Some(Key::from_raw(&task.end_key))
         };
-        let rx = self.seek_backup_range(start_key, end_key);
+        let rx = self.seek_backup_range(start_key, end_key, task.cancel);
 
         // TODO: should we combine seek_backup_range and dispatch_backup_range?
         let (res_tx, res_rx) = mpsc::channel();
@@ -329,6 +358,10 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
 
 impl<E: Engine, R: RegionInfoProvider> Runnable<Task> for Endpoint<E, R> {
     fn run(&mut self, task: Task) {
+        if task.has_canceled() {
+            warn!("backup task has canceled"; "task" => %task);
+            return;
+        }
         info!("run backup task"; "task" => %task);
         if task.start_ts == task.end_ts {
             self.handle_backup_task(task);
@@ -387,11 +420,13 @@ pub mod tests {
     pub struct MockRegionInfoProvider {
         // start_key -> (region_id, end_key)
         regions: Arc<Mutex<RegionCollector>>,
+        cancel: Option<Arc<AtomicBool>>,
     }
     impl MockRegionInfoProvider {
         pub fn new() -> Self {
             MockRegionInfoProvider {
                 regions: Arc::new(Mutex::new(RegionCollector::new())),
+                cancel: None,
             }
         }
         pub fn set_regions(&self, regions: Vec<(Vec<u8>, Vec<u8>, u64)>) {
@@ -411,11 +446,17 @@ pub mod tests {
                 map.create_region(r, StateRole::Leader);
             }
         }
+        fn canecl_on_seek(&mut self, cancel: Arc<AtomicBool>) {
+            self.cancel = Some(cancel);
+        }
     }
     impl RegionInfoProvider for MockRegionInfoProvider {
         fn seek_region(&self, from: &[u8], callback: SeekRegionCallback) -> EngineResult<()> {
             let from = from.to_vec();
             let regions = self.regions.lock().unwrap();
+            if let Some(c) = self.cancel.as_ref() {
+                c.store(true, Ordering::SeqCst);
+            }
             regions.handle_seek_region(from, callback);
             Ok(())
         }
@@ -441,10 +482,9 @@ pub mod tests {
 
     pub fn check_response<F>(rx: UnboundedReceiver<BackupResponse>, check: F)
     where
-        F: FnOnce(BackupResponse),
+        F: FnOnce(Option<BackupResponse>),
     {
         let (resp, rx) = rx.into_future().wait().unwrap();
-        let resp = resp.unwrap();
         check(resp);
         let (none, _rx) = rx.into_future().wait().unwrap();
         assert!(none.is_none(), "{:?}", none);
@@ -473,7 +513,7 @@ pub mod tests {
             } else {
                 Some(Key::from_raw(end_key))
             };
-            let rx = endpoint.seek_backup_range(start_key, end_key);
+            let rx = endpoint.seek_backup_range(start_key, end_key, Arc::default());
             let ranges: Vec<BackupRange> = rx.into_iter().collect();
             // println!("got {:?}, expect {:?}", ranges, expect);
             assert_eq!(
@@ -508,6 +548,7 @@ pub mod tests {
                 end_ts: 1,
                 resp: tx,
                 storage: Arc::new(ls),
+                cancel: Arc::default(),
             };
             endpoint.handle_backup_task(task);
             let resps: Vec<_> = rx.collect().wait().unwrap();
@@ -607,7 +648,7 @@ pub mod tests {
                 "local://{}",
                 tmp.path().join(format!("{}", ts)).display()
             ));
-            let task = Task::new(req, tx).unwrap();
+            let (task, _) = Task::new(req, tx).unwrap();
             endpoint.handle_backup_task(task);
             let (resp, rx) = rx.into_future().wait().unwrap();
             let resp = resp.unwrap();
@@ -660,9 +701,10 @@ pub mod tests {
             tmp.path().join(format!("{}", now)).display()
         ));
         let (tx, rx) = unbounded();
-        let task = Task::new(req.clone(), tx).unwrap();
+        let (task, _) = Task::new(req.clone(), tx).unwrap();
         endpoint.handle_backup_task(task);
         check_response(rx, |resp| {
+            let resp = resp.unwrap();
             assert!(resp.get_error().has_kv_error(), "{:?}", resp);
             assert!(resp.get_error().get_kv_error().has_locked(), "{:?}", resp);
             assert_eq!(resp.get_files().len(), 0, "{:?}", resp);
@@ -683,9 +725,10 @@ pub mod tests {
             tmp.path().join(format!("{}", now)).display()
         ));
         let (tx, rx) = unbounded();
-        let task = Task::new(req.clone(), tx).unwrap();
+        let (task, _) = Task::new(req.clone(), tx).unwrap();
         endpoint.handle_backup_task(task);
         check_response(rx, |resp| {
+            let resp = resp.unwrap();
             assert!(resp.get_error().has_region_error(), "{:?}", resp);
             assert!(
                 resp.get_error().get_region_error().has_not_leader(),
@@ -694,5 +737,61 @@ pub mod tests {
             );
         });
     }
+
+    #[test]
+    fn test_cancel() {
+        let (_tmp, mut endpoint) = new_endpoint();
+        let engine = endpoint.engine.clone();
+
+        endpoint
+            .region_info
+            .set_regions(vec![(b"".to_vec(), b"5".to_vec(), 1)]);
+
+        let mut ts = 1;
+        let mut alloc_ts = || {
+            ts += 1;
+            ts
+        };
+        let start = alloc_ts();
+        let key = format!("{}", start);
+        must_prewrite_put(
+            &engine,
+            key.as_bytes(),
+            key.as_bytes(),
+            key.as_bytes(),
+            start,
+        );
+        // Commit the perwrite.
+        let commit = alloc_ts();
+        must_commit(&engine, key.as_bytes(), start, commit);
+
+        let now = alloc_ts();
+        let mut req = BackupRequest::new();
+        req.set_start_key(vec![]);
+        req.set_end_key(vec![]);
+        req.set_start_version(now);
+        req.set_end_version(now);
+        req.set_path("noop://foo".to_owned());
+
+        // Cancel the task before starting the task.
+        let (tx, rx) = unbounded();
+        let (task, cancel) = Task::new(req.clone(), tx).unwrap();
+        // Cancel the task.
+        cancel.store(true, Ordering::SeqCst);
+        endpoint.handle_backup_task(task);
+        check_response(rx, |resp| {
+            assert!(resp.is_none());
+        });
+
+        // Cancel the task during backup.
+        let (tx, rx) = unbounded();
+        let (task, cancel) = Task::new(req.clone(), tx).unwrap();
+        endpoint.region_info.canecl_on_seek(cancel);
+        endpoint.handle_backup_task(task);
+        check_response(rx, |resp| {
+            assert!(resp.is_none());
+        });
+    }
+
     // TODO: region err in txn(engine(request))
 }
