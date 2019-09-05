@@ -1,6 +1,6 @@
 // Copyright 2017 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::io::{Result, Write, Read};
+use std::io::{Read, Result, Write};
 use std::option::Option;
 use std::sync::Arc;
 
@@ -196,7 +196,8 @@ mod tests {
         let mut buf = Vec::with_capacity(1024);
         for c in 0..1024usize {
             let mut source = std::io::repeat(b'7').take(c as _);
-            let mut limit_reader = LimitReader::new(Some(Arc::new(IOLimiter::new(1024000))), &mut source);
+            let mut limit_reader =
+                LimitReader::new(Some(Arc::new(IOLimiter::new(1024000))), &mut source);
             let count = limit_reader.read_to_end(&mut buf).unwrap();
             assert_eq!(count, c);
             assert_eq!(count, buf.len());

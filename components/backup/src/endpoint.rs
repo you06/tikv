@@ -4,6 +4,7 @@ use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 
+use engine::rocks::util::io_limiter::IOLimiter;
 use engine::DB;
 use futures::sync::mpsc::*;
 use futures::{lazy, Future};
@@ -35,7 +36,7 @@ pub struct Task {
     start_ts: u64,
     end_ts: u64,
 
-    storage: Arc<dyn Storage>,
+    storage: LimitedStorage,
     pub(crate) resp: UnboundedSender<BackupResponse>,
 
     cancel: Arc<AtomicBool>,
@@ -57,23 +58,32 @@ impl fmt::Debug for Task {
     }
 }
 
+#[derive(Clone)]
+struct LimitedStorage {
+    limiter: Option<Arc<IOLimiter>>,
+    storage: Arc<dyn Storage>,
+}
+
 impl Task {
     pub fn new(
         req: BackupRequest,
         resp: UnboundedSender<BackupResponse>,
     ) -> Result<(Task, Arc<AtomicBool>)> {
-        let start_key = req.get_start_key().to_owned();
-        let end_key = req.get_end_key().to_owned();
-        let start_ts = req.get_start_version();
-        let end_ts = req.get_end_version();
-        let storage = create_storage(req.get_path())?;
         let cancel = Arc::new(AtomicBool::new(false));
+
+        let mut storage = LimitedStorage {
+            storage: create_storage(req.get_path())?,
+            limiter: None,
+        };
+        if req.get_rate_limit() != 0 {
+            storage.limiter = Some(Arc::new(IOLimiter::new(req.get_rate_limit() as _)));
+        }
         Ok((
             Task {
-                start_key,
-                end_key,
-                start_ts,
-                end_ts,
+                start_key: req.get_start_key().to_owned(),
+                end_key: req.get_end_key().to_owned(),
+                start_ts: req.get_start_version(),
+                end_ts: req.get_end_version(),
                 resp,
                 storage,
                 cancel: cancel.clone(),
@@ -204,7 +214,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
         brange: BackupRange,
         start_ts: u64,
         end_ts: u64,
-        storage: Arc<dyn Storage>,
+        storage: LimitedStorage,
         tx: mpsc::Sender<(BackupRange, Result<(Vec<File>, Statistics)>)>,
     ) {
         // TODO: support incremental backup
@@ -243,7 +253,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                 .unwrap();
             let mut batch = EntryBatch::with_capacity(1024);
             let name = backup_file_name(store_id, &brange.region);
-            let mut writer = match BackupWriter::new(db, &name) {
+            let mut writer = match BackupWriter::new(db, &name, storage.limiter) {
                 Ok(w) => w,
                 Err(e) => {
                     error!("backup writer failed"; "error" => ?e);
@@ -270,7 +280,7 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                 .with_label_values(&["scan"])
                 .observe(start.elapsed().as_secs_f64());
             // Save sst files to storage.
-            let files = match writer.save(&storage) {
+            let files = match writer.save(&storage.storage) {
                 Ok(files) => files,
                 Err(e) => {
                     error!("backup save file failed"; "error" => ?e);
@@ -540,6 +550,10 @@ pub mod tests {
             // println!("tt {:?}", (start_key, end_key, expect.clone()));
             let tmp = TempDir::new().unwrap();
             let ls = LocalStorage::new(tmp.path()).unwrap();
+            let storage = LimitedStorage {
+                storage: Arc::new(ls) as _,
+                limiter: None,
+            };
             let (tx, rx) = unbounded();
             let task = Task {
                 start_key: start_key.to_vec(),
@@ -547,7 +561,7 @@ pub mod tests {
                 start_ts: 1,
                 end_ts: 1,
                 resp: tx,
-                storage: Arc::new(ls),
+                storage,
                 cancel: Arc::default(),
             };
             endpoint.handle_backup_task(task);
@@ -633,6 +647,7 @@ pub mod tests {
         }
 
         // TODO: check key number for each snapshot.
+        let limiter = Arc::new(IOLimiter::new(10 * 1024 * 1024 /* 10 MB/s */));
         for (ts, len) in backup_tss {
             let mut req = BackupRequest::new();
             req.set_start_key(vec![]);
@@ -648,7 +663,16 @@ pub mod tests {
                 "local://{}",
                 tmp.path().join(format!("{}", ts)).display()
             ));
-            let (task, _) = Task::new(req, tx).unwrap();
+            if len % 2 == 0 {
+                req.set_rate_limit(10 * 1024 * 1024);
+            }
+            let (mut task, _) = Task::new(req, tx).unwrap();
+            if len % 2 == 0 {
+                // Make sure the rate limiter is set.
+                assert!(task.storage.limiter.is_some());
+                // Share the same rate limiter.
+                task.storage.limiter = Some(limiter.clone());
+            }
             endpoint.handle_backup_task(task);
             let (resp, rx) = rx.into_future().wait().unwrap();
             let resp = resp.unwrap();

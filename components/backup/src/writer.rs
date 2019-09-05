@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use engine::rocks::util::io_limiter::{IOLimiter, LimitReader};
 use engine::rocks::{SstWriter, SstWriterBuilder};
 use engine::{CF_DEFAULT, CF_WRITE, DB};
 use kvproto::backup::File;
@@ -18,10 +19,12 @@ pub struct BackupWriter {
     default_written: bool,
     write: SstWriter,
     write_written: bool,
+
+    limiter: Option<Arc<IOLimiter>>,
 }
 
 impl BackupWriter {
-    pub fn new(db: Arc<DB>, name: &str) -> Result<BackupWriter> {
+    pub fn new(db: Arc<DB>, name: &str, limiter: Option<Arc<IOLimiter>>) -> Result<BackupWriter> {
         let default = SstWriterBuilder::new()
             .set_in_memory(true)
             .set_cf(CF_DEFAULT)
@@ -39,6 +42,7 @@ impl BackupWriter {
             default_written: false,
             write,
             write_written: false,
+            limiter,
         })
     }
 
@@ -75,18 +79,20 @@ impl BackupWriter {
 
     pub fn save(mut self, storage: &dyn Storage) -> Result<Vec<File>> {
         let name = self.name;
-        let save_and_build_file = |cf, mut contents: &[u8]| -> Result<File> {
-            BACKUP_RANGE_SIZE_HISTOGRAM_VEC
-                .with_label_values(&[cf])
-                .observe(contents.len() as _);
-            let name = format!("{}_{}", name, cf);
-            let checksum = tikv_util::file::calc_crc32_bytes(contents);
-            storage.write(&name, &mut contents as &mut dyn std::io::Read)?;
-            let mut file = File::new();
-            file.set_crc32(checksum);
-            file.set_name(name);
-            Ok(file)
-        };
+        let save_and_build_file =
+            |cf, mut contents: &[u8], limiter: Option<&Arc<IOLimiter>>| -> Result<File> {
+                BACKUP_RANGE_SIZE_HISTOGRAM_VEC
+                    .with_label_values(&[cf])
+                    .observe(contents.len() as _);
+                let name = format!("{}_{}", name, cf);
+                let checksum = tikv_util::file::calc_crc32_bytes(contents);
+                let mut limit_reader = LimitReader::new(limiter.cloned(), &mut contents);
+                storage.write(&name, &mut limit_reader)?;
+                let mut file = File::new();
+                file.set_crc32(checksum);
+                file.set_name(name);
+                Ok(file)
+            };
         let start = Instant::now();
         let mut files = Vec::with_capacity(2);
         let mut buf = Vec::new();
@@ -94,7 +100,7 @@ impl BackupWriter {
             // Save default cf contents.
             buf.reserve(self.default.file_size() as _);
             self.default.finish_into(&mut buf)?;
-            let default = save_and_build_file(CF_DEFAULT, &mut buf)?;
+            let default = save_and_build_file(CF_DEFAULT, &mut buf, self.limiter.as_ref())?;
             files.push(default);
             buf.clear();
         }
@@ -102,7 +108,7 @@ impl BackupWriter {
             // Save write cf contents.
             buf.reserve(self.write.file_size() as _);
             self.write.finish_into(&mut buf)?;
-            let write = save_and_build_file(CF_WRITE, &mut buf)?;
+            let write = save_and_build_file(CF_WRITE, &mut buf, self.limiter.as_ref())?;
             files.push(write);
         }
         BACKUP_RANGE_HISTOGRAM_VEC
