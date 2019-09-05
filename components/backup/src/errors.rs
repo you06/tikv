@@ -50,6 +50,8 @@ pub enum Error {
     Txn(TxnError),
     #[fail(display = "ClusterID error current {}, request {}", current, request)]
     ClusterID { current: u64, request: u64 },
+    #[fail(display = "Canceled error")]
+    Canceled,
 }
 
 macro_rules! impl_from {

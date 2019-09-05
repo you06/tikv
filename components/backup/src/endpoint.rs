@@ -8,7 +8,7 @@ use engine::rocks::util::io_limiter::IOLimiter;
 use engine::DB;
 use futures::sync::mpsc::*;
 use futures::{lazy, Future};
-use kvproto::backup::*;
+use kvproto::backup::{BackupRequest, BackupResponse, File};
 use kvproto::kvrpcpb::{Context, IsolationLevel};
 use kvproto::metapb::*;
 use raft::StateRole;
@@ -110,6 +110,63 @@ pub struct BackupRange {
 impl BackupRange {
     fn has_canceled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+    }
+
+    fn scan_to_writer<E: Engine>(
+        &self,
+        backup_ts: u64,
+        engine: E,
+        writer: &mut BackupWriter,
+    ) -> Result<Statistics> {
+        let mut ctx = Context::new();
+        ctx.set_region_id(self.region.get_id());
+        ctx.set_region_epoch(self.region.get_region_epoch().to_owned());
+        ctx.set_peer(self.leader.clone());
+
+        // TODO: make it async.
+        let snapshot = match engine.snapshot(&ctx) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("backup snapshot failed"; "error" => ?e);
+                return Err(e.into());
+            }
+        };
+        if self.has_canceled() {
+            warn!("backup task has canceled"; "range" => ?self);
+            return Err(Error::Canceled);
+        }
+        let snap_store = SnapshotStore::new(
+            snapshot,
+            backup_ts,
+            IsolationLevel::Si,
+            false, /* fill_cache */
+        );
+        let start_key = self.start_key.clone();
+        let end_key = self.end_key.clone();
+        let mut scanner = snap_store
+            .entry_scanner(start_key.clone(), end_key.clone())
+            .unwrap();
+        let mut batch = EntryBatch::with_capacity(1024);
+        let start = Instant::now();
+        loop {
+            if let Err(e) = scanner.scan_entries(&mut batch) {
+                error!("backup scan entries failed"; "error" => ?e);
+                return Err(e.into());
+            };
+            if batch.len() == 0 {
+                break;
+            }
+            debug!("backup scan entries"; "len" => batch.len());
+            // Build sst files.
+            if let Err(e) = writer.write(batch.drain()) {
+                error!("backup build sst failed"; "error" => ?e);
+                return Err(e.into());
+            }
+        }
+        BACKUP_RANGE_HISTOGRAM_VEC
+            .with_label_values(&["scan"])
+            .observe(start.elapsed().as_secs_f64());
+        Ok(scanner.take_statistics())
     }
 }
 
@@ -225,33 +282,10 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
         ctx.set_region_id(brange.region.get_id());
         ctx.set_region_epoch(brange.region.get_region_epoch().to_owned());
         ctx.set_peer(brange.leader.clone());
-        // TODO: make it async.
-        let snapshot = match self.engine.snapshot(&ctx) {
-            Ok(s) => s,
-            Err(e) => {
-                error!("backup snapshot failed"; "error" => ?e);
-                return tx.send((brange, Err(e.into()))).unwrap();
-            }
-        };
         let db = self.db.clone();
         let store_id = self.store_id;
+        let engine = self.engine.clone();
         self.workers.spawn(lazy(move || {
-            if brange.has_canceled() {
-                warn!("backup task has canceled"; "range" => ?brange);
-                return Ok(());
-            }
-            let snap_store = SnapshotStore::new(
-                snapshot,
-                backup_ts,
-                IsolationLevel::Si,
-                false, /* fill_cache */
-            );
-            let start_key = brange.start_key.clone();
-            let end_key = brange.end_key.clone();
-            let mut scanner = snap_store
-                .entry_scanner(start_key.clone(), end_key.clone())
-                .unwrap();
-            let mut batch = EntryBatch::with_capacity(1024);
             let name = backup_file_name(store_id, &brange.region);
             let mut writer = match BackupWriter::new(db, &name, storage.limiter) {
                 Ok(w) => w,
@@ -260,35 +294,22 @@ impl<E: Engine, R: RegionInfoProvider> Endpoint<E, R> {
                     return tx.send((brange, Err(e))).map_err(|_| ());
                 }
             };
-            let start = Instant::now();
-            loop {
-                if let Err(e) = scanner.scan_entries(&mut batch) {
-                    error!("backup scan entries failed"; "error" => ?e);
-                    return tx.send((brange, Err(e.into()))).map_err(|_| ());
-                };
-                if batch.len() == 0 {
-                    break;
+            match brange.scan_to_writer(backup_ts, engine, &mut writer) {
+                Ok(stat) => {
+                    // Save sst files to storage.
+                    let files = match writer.save(&storage.storage) {
+                        Ok(files) => files,
+                        Err(e) => {
+                            error!("backup save file failed"; "error" => ?e);
+                            return tx.send((brange, Err(e))).map_err(|_| ());
+                        }
+                    };
+                    tx.send((brange, Ok((files, stat)))).map_err(|_| ())
                 }
-                debug!("backup scan entries"; "len" => batch.len());
-                // Build sst files.
-                if let Err(e) = writer.write(batch.drain()) {
-                    error!("backup build sst failed"; "error" => ?e);
-                    return tx.send((brange, Err(e))).map_err(|_| ());
-                }
+                // Ignore canceled error.
+                Err(Error::Canceled) => Ok(()),
+                Err(e) => tx.send((brange, Err(e))).map_err(|_| ()),
             }
-            BACKUP_RANGE_HISTOGRAM_VEC
-                .with_label_values(&["scan"])
-                .observe(start.elapsed().as_secs_f64());
-            // Save sst files to storage.
-            let files = match writer.save(&storage.storage) {
-                Ok(files) => files,
-                Err(e) => {
-                    error!("backup save file failed"; "error" => ?e);
-                    return tx.send((brange, Err(e))).map_err(|_| ());
-                }
-            };
-            let stat = scanner.take_statistics();
-            tx.send((brange, Ok((files, stat)))).map_err(|_| ())
         }));
     }
 
