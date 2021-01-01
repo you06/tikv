@@ -1,15 +1,14 @@
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
 
-use txn_types::{Key, Mutation, TimeStamp};
+use txn_types::{Mutation, TimeStamp};
 
 use crate::storage::kv::WriteData;
 use crate::storage::lock_manager::LockManager;
 use crate::storage::mvcc::MvccTxn;
 use crate::storage::txn::commands::{
-    Command, CommandExt, ReleasedLocks, ResponsePolicy, TypedCommand, WriteCommand, WriteContext,
-    WriteResult,
+    Command, CommandExt, ResponsePolicy, TypedCommand, WriteCommand, WriteContext, WriteResult,
 };
-use crate::storage::txn::{commit, Error, ErrorInner, Result};
+use crate::storage::txn::{deterministic_write, Error, ErrorInner, Result};
 use crate::storage::{ProcessResult, Snapshot, TxnStatus};
 
 command! {
@@ -53,41 +52,39 @@ impl CommandExt for DeterministicWrite {
 
 impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for DeterministicWrite {
     fn process_write(self, snapshot: S, context: WriteContext<'_, L>) -> Result<WriteResult> {
-        // if self.commit_ts <= self.lock_ts {
-        //     return Err(Error::from(ErrorInner::InvalidTxnTso {
-        //         start_ts: self.lock_ts,
-        //         commit_ts: self.commit_ts,
-        //     }));
-        // }
-        // let mut txn = MvccTxn::new(
-        //     snapshot,
-        //     self.lock_ts,
-        //     !self.ctx.get_not_fill_cache(),
-        //     context.concurrency_manager,
-        // );
-        //
-        // let rows = self.keys.len();
-        // // Pessimistic txn needs key_hashes to wake up waiters
-        // let mut released_locks = ReleasedLocks::new(self.lock_ts, self.commit_ts);
-        // for k in self.keys {
-        //     released_locks.push(commit(&mut txn, k, self.commit_ts)?);
-        // }
-        // released_locks.wake_up(context.lock_mgr);
-        //
-        // context.statistics.add(&txn.take_statistics());
-        // let pr = ProcessResult::TxnStatus {
-        //     txn_status: TxnStatus::committed(self.commit_ts),
-        // };
-        // let write_data = WriteData::from_modifies(txn.into_modifies());
-        // Ok(WriteResult {
-        //     ctx: self.ctx,
-        //     to_be_write: write_data,
-        //     rows,
-        //     pr,
-        //     lock_info: None,
-        //     lock_guards: vec![],
-        //     response_policy: ResponsePolicy::OnApplied,
-        // })
-        unimplemented!()
+        if self.commit_ts <= self.start_ts {
+            return Err(Error::from(ErrorInner::InvalidTxnTso {
+                start_ts: self.start_ts,
+                commit_ts: self.commit_ts,
+            }));
+        }
+
+        let mut txn = MvccTxn::new(
+            snapshot,
+            self.start_ts,
+            !self.ctx.get_not_fill_cache(),
+            context.concurrency_manager,
+        );
+
+        let rows = self.mutations.len();
+
+        for m in self.mutations {
+            deterministic_write(&mut txn, m, self.commit_ts)?;
+        }
+
+        context.statistics.add(&txn.take_statistics());
+        let pr = ProcessResult::TxnStatus {
+            txn_status: TxnStatus::committed(self.commit_ts),
+        };
+        let write_data = WriteData::from_modifies(txn.into_modifies());
+        Ok(WriteResult {
+            ctx: self.ctx,
+            to_be_write: write_data,
+            rows,
+            pr,
+            lock_info: None,
+            lock_guards: vec![],
+            response_policy: ResponsePolicy::OnApplied,
+        })
     }
 }

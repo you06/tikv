@@ -10,6 +10,7 @@ pub mod check_data_constraint;
 pub mod check_txn_status;
 pub mod cleanup;
 pub mod commit;
+pub mod deterministic_write;
 pub mod gc;
 pub mod prewrite;
 pub mod tests;

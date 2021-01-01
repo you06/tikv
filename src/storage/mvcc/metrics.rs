@@ -12,6 +12,7 @@ make_static_metric! {
         acquire_pessimistic_lock_conflict,
         pipelined_acquire_pessimistic_lock_amend_fail,
         pipelined_acquire_pessimistic_lock_amend_success,
+        stale_deterministic_write,
     }
 
     pub label_enum MvccDuplicateCommandKind {
@@ -19,6 +20,7 @@ make_static_metric! {
         commit,
         rollback,
         acquire_pessimistic_lock,
+        deterministic_write,
     }
 
     pub label_enum MvccCheckTxnStatusKind {

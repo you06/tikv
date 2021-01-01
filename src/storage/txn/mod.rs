@@ -12,6 +12,7 @@ pub use actions::{
     acquire_pessimistic_lock::acquire_pessimistic_lock,
     cleanup::cleanup,
     commit::commit,
+    deterministic_write::deterministic_write,
     gc::gc,
     prewrite::{prewrite, CommitKind, TransactionKind, TransactionProperties},
 };
