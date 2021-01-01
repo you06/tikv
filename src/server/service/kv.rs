@@ -1752,7 +1752,13 @@ txn_command_future!(future_mvcc_get_by_start_ts, MvccGetByStartTsRequest, MvccGe
 });
 
 txn_command_future!(future_deterministic_write, DeterministicWriteRequest, DeterministicWriteResponse, (v, resp) {
-    unimplemented!()
+    match v {
+        Ok(TxnStatus::Committed { .. }) => {
+            // TODO: Does the response need a commit_ts field?
+        }
+        Ok(_) => unreachable!(),
+        Err(e) => resp.set_errors(vec![extract_key_error(&e)].into()),
+    }
 });
 
 #[cfg(feature = "protobuf-codec")]
