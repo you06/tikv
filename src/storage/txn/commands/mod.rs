@@ -8,6 +8,7 @@ pub(crate) mod check_secondary_locks;
 pub(crate) mod check_txn_status;
 pub(crate) mod cleanup;
 pub(crate) mod commit;
+pub(crate) mod deterministic_write;
 pub(crate) mod mvcc_by_key;
 pub(crate) mod mvcc_by_start_ts;
 pub(crate) mod pause;
@@ -25,6 +26,7 @@ pub use check_secondary_locks::CheckSecondaryLocks;
 pub use check_txn_status::CheckTxnStatus;
 pub use cleanup::Cleanup;
 pub use commit::Commit;
+pub use deterministic_write::DeterministicWrite;
 pub use mvcc_by_key::MvccByKey;
 pub use mvcc_by_start_ts::MvccByStartTs;
 pub use pause::Pause;
@@ -84,6 +86,7 @@ pub enum Command {
     Pause(Pause),
     MvccByKey(MvccByKey),
     MvccByStartTs(MvccByStartTs),
+    DeterministicWrite(DeterministicWrite),
 }
 
 /// A `Command` with its return type, reified as the generic parameter `T`.
@@ -348,6 +351,17 @@ impl From<MvccGetByStartTsRequest> for TypedCommand<Option<(Key, MvccInfo)>> {
     }
 }
 
+impl From<DeterministicWriteRequest> for TypedCommand<TxnStatus> {
+    fn from(mut req: DeterministicWriteRequest) -> Self {
+        DeterministicWrite::new(
+            req.take_mutations().into_iter().map(Into::into).collect(),
+            req.get_start_version().into(),
+            req.get_commit_ts().into(),
+            req.take_context(),
+        )
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ReleasedLocks {
     start_ts: TimeStamp,
@@ -502,6 +516,7 @@ impl Command {
             Command::Pause(t) => t,
             Command::MvccByKey(t) => t,
             Command::MvccByStartTs(t) => t,
+            Command::DeterministicWrite(t) => t,
         }
     }
 
@@ -524,6 +539,7 @@ impl Command {
             Command::Pause(t) => t,
             Command::MvccByKey(t) => t,
             Command::MvccByStartTs(t) => t,
+            Command::DeterministicWrite(t) => t,
         }
     }
 
@@ -560,6 +576,7 @@ impl Command {
             Command::CheckTxnStatus(t) => t.process_write(snapshot, context),
             Command::CheckSecondaryLocks(t) => t.process_write(snapshot, context),
             Command::Pause(t) => t.process_write(snapshot, context),
+            Command::DeterministicWrite(t) => t.process_write(snapshot, context),
             _ => panic!("unsupported write command"),
         }
     }

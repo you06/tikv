@@ -53,6 +53,9 @@ make_auto_flush_static_metric! {
         mvcc_get_by_start_ts,
         split_region,
         read_index,
+        deterministic_write,
+        get_checkpoint,
+        write_checkpoint,
     }
 
     pub label_enum GcCommandKind {

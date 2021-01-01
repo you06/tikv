@@ -34,7 +34,7 @@ use engine_rocks::{
     DEFAULT_PROP_SIZE_INDEX_DISTANCE,
 };
 use engine_traits::{CFOptionsExt, ColumnFamilyOptions as ColumnFamilyOptionsTrait, DBOptionsExt};
-use engine_traits::{CF_DEFAULT, CF_LOCK, CF_RAFT, CF_VER_DEFAULT, CF_WRITE};
+use engine_traits::{CF_DEFAULT, CF_LOCK, CF_META, CF_RAFT, CF_VER_DEFAULT, CF_WRITE};
 use keys::region_raft_prefix_len;
 use pd_client::Config as PdConfig;
 use raft_log_engine::RaftEngineConfig as RawRaftEngineConfig;
@@ -860,6 +860,72 @@ impl VersionCfConfig {
     }
 }
 
+cf_config!(MetaCfConfig);
+
+impl Default for MetaCfConfig {
+    fn default() -> MetaCfConfig {
+        // Setting blob_run_mode=read_only effectively disable Titan.
+        let mut titan = TitanCfConfig::default();
+        titan.blob_run_mode = BlobRunMode::ReadOnly;
+        MetaCfConfig {
+            block_size: ReadableSize::kb(16),
+            block_cache_size: ReadableSize::mb(16),
+            disable_block_cache: false,
+            cache_index_and_filter_blocks: true,
+            pin_l0_filter_and_index_blocks: true,
+            use_bloom_filter: true,
+            optimize_filters_for_hits: true,
+            whole_key_filtering: true,
+            bloom_filter_bits_per_key: 10,
+            block_based_bloom_filter: false,
+            read_amp_bytes_per_bit: 0,
+            compression_per_level: [DBCompressionType::No; 7],
+            write_buffer_size: ReadableSize::mb(16),
+            max_write_buffer_number: 5,
+            min_write_buffer_number_to_merge: 1,
+            max_bytes_for_level_base: ReadableSize::mb(128),
+            target_file_size_base: ReadableSize::mb(8),
+            level0_file_num_compaction_trigger: 1,
+            level0_slowdown_writes_trigger: 20,
+            level0_stop_writes_trigger: 36,
+            max_compaction_bytes: ReadableSize::mb(32),
+            compaction_pri: CompactionPriority::ByCompensatedSize,
+            dynamic_level_bytes: true,
+            num_levels: 2,
+            max_bytes_for_level_multiplier: 10,
+            compaction_style: DBCompactionStyle::Level,
+            disable_auto_compactions: false,
+            soft_pending_compaction_bytes_limit: ReadableSize::mb(64),
+            hard_pending_compaction_bytes_limit: ReadableSize::mb(256),
+            force_consistency_checks: false,
+            prop_size_index_distance: DEFAULT_PROP_SIZE_INDEX_DISTANCE,
+            prop_keys_index_distance: DEFAULT_PROP_KEYS_INDEX_DISTANCE,
+            enable_doubly_skiplist: true,
+            enable_compaction_guard: false,
+            compaction_guard_min_output_file_size: ReadableSize::mb(8),
+            compaction_guard_max_output_file_size: ReadableSize::mb(128),
+            titan,
+            bottommost_level_compression: DBCompressionType::Disable,
+            bottommost_zstd_compression_dict_size: 0,
+            bottommost_zstd_compression_sample_size: 0,
+        }
+    }
+}
+
+impl MetaCfConfig {
+    pub fn build_opt(&self, cache: &Option<Cache>) -> ColumnFamilyOptions {
+        let no_region_info_accessor: Option<&RegionInfoAccessor> = None;
+        let mut cf_opts = build_cf_opt!(self, CF_RAFT, cache, no_region_info_accessor);
+        let f = Box::new(NoopSliceTransform);
+        cf_opts
+            .set_prefix_extractor("NoopSliceTransform", f)
+            .unwrap();
+        cf_opts.set_memtable_prefix_bloom_size_ratio(0.1);
+        cf_opts.set_titandb_options(&self.titan.build_opts());
+        cf_opts
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 #[serde(default)]
 #[serde(rename_all = "kebab-case")]
@@ -973,6 +1039,8 @@ pub struct DbConfig {
     #[config(submodule)]
     pub ver_defaultcf: VersionCfConfig,
     #[config(skip)]
+    pub metacf: MetaCfConfig,
+    #[config(skip)]
     pub titan: TitanDBConfig,
 }
 
@@ -1019,6 +1087,7 @@ impl Default for DbConfig {
             lockcf: LockCfConfig::default(),
             raftcf: RaftCfConfig::default(),
             ver_defaultcf: VersionCfConfig::default(),
+            metacf: MetaCfConfig::default(),
             titan: titan_config,
         }
     }
@@ -1108,6 +1177,7 @@ impl DbConfig {
                 CF_VER_DEFAULT,
                 self.ver_defaultcf.build_opt(cache, region_info_accessor),
             ),
+            CFOptions::new(CF_META, self.metacf.build_opt(cache)),
         ]
     }
 
@@ -1117,6 +1187,7 @@ impl DbConfig {
         self.writecf.validate()?;
         self.raftcf.validate()?;
         self.ver_defaultcf.validate()?;
+        self.metacf.validate()?;
         self.titan.validate()?;
         if self.enable_unordered_write {
             if self.titan.enabled {

@@ -264,6 +264,30 @@ impl<T: RaftStoreRouter<RocksEngine> + 'static, E: Engine, L: LockManager> Tikv
         RawDeleteRangeRequest,
         RawDeleteRangeResponse
     );
+    handle_request!(
+        deterministic_write,
+        future_deterministic_write,
+        DeterministicWriteRequest,
+        DeterministicWriteResponse
+    );
+
+    fn get_checkpoint(
+        &mut self,
+        _: RpcContext<'_>,
+        _req: GetCheckpointRequest,
+        _sink: UnarySink<GetCheckpointResponse>,
+    ) {
+        unimplemented!();
+    }
+
+    fn write_checkpoint(
+        &mut self,
+        _: RpcContext<'_>,
+        _req: WriteCheckpointRequest,
+        _sink: UnarySink<WriteCheckpointResponse>,
+    ) {
+        unimplemented!();
+    }
 
     fn kv_import(&mut self, _: RpcContext<'_>, _: ImportRequest, _: UnarySink<ImportResponse>) {
         unimplemented!();
@@ -1725,6 +1749,10 @@ txn_command_future!(future_mvcc_get_by_start_ts, MvccGetByStartTsRequest, MvccGe
         }
         Err(e) => resp.set_error(format!("{}", e)),
     }
+});
+
+txn_command_future!(future_deterministic_write, DeterministicWriteRequest, DeterministicWriteResponse, (v, resp) {
+    unimplemented!()
 });
 
 #[cfg(feature = "protobuf-codec")]

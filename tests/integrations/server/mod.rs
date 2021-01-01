@@ -235,6 +235,18 @@ trait MockKvService {
     unary_call!(read_index, ReadIndexRequest, ReadIndexResponse);
     bstream_call!(batch_commands, BatchCommandsRequest, BatchCommandsResponse);
     unary_call!(check_leader, CheckLeaderRequest, CheckLeaderResponse);
+
+    unary_call!(
+        deterministic_write,
+        DeterministicWriteRequest,
+        DeterministicWriteResponse
+    );
+    unary_call!(get_checkpoint, GetCheckpointRequest, GetCheckpointResponse);
+    unary_call!(
+        write_checkpoint,
+        WriteCheckpointRequest,
+        WriteCheckpointResponse
+    );
 }
 
 impl<T: MockKvService + Clone + Send + 'static> Tikv for MockKv<T> {
@@ -350,6 +362,18 @@ impl<T: MockKvService + Clone + Send + 'static> Tikv for MockKv<T> {
     unary_call_dispatch!(read_index, ReadIndexRequest, ReadIndexResponse);
     bstream_call_dispatch!(batch_commands, BatchCommandsRequest, BatchCommandsResponse);
     unary_call_dispatch!(check_leader, CheckLeaderRequest, CheckLeaderResponse);
+
+    unary_call_dispatch!(
+        deterministic_write,
+        DeterministicWriteRequest,
+        DeterministicWriteResponse
+    );
+    unary_call_dispatch!(get_checkpoint, GetCheckpointRequest, GetCheckpointResponse);
+    unary_call_dispatch!(
+        write_checkpoint,
+        WriteCheckpointRequest,
+        WriteCheckpointResponse
+    );
 }
 
 fn mock_kv_service<T>(kv: MockKv<T>, ip: &str, port: u16) -> Result<Server>
