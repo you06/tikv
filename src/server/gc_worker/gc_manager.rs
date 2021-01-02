@@ -634,6 +634,7 @@ mod tests {
             } => callback,
             GcTask::PhysicalScanLock { .. } => unreachable!(),
             GcTask::Validate(_) => unreachable!(),
+            GcTask::DeleteVersionsByCommitTs { .. } => unreachable!(),
         };
         mem::replace(callback, Box::new(|_| {}))
     }

@@ -56,6 +56,7 @@ make_auto_flush_static_metric! {
         deterministic_write,
         get_checkpoint,
         write_checkpoint,
+        delete_versions_by_commit_ts,
     }
 
     pub label_enum GcCommandKind {
@@ -63,6 +64,7 @@ make_auto_flush_static_metric! {
         unsafe_destroy_range,
         physical_scan_lock,
         validate_config,
+        delete_versions_by_commit_ts,
     }
 
     pub label_enum SnapTask {

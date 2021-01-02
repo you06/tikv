@@ -21,11 +21,13 @@ use tikv_util::time::{duration_to_sec, Limiter, SlowTimer};
 use tikv_util::worker::{
     FutureRunnable, FutureScheduler, FutureWorker, Stopped as FutureWorkerStopped,
 };
-use txn_types::{Key, TimeStamp};
+use txn_types::{Key, TimeStamp, TsSet, WriteRef, WriteType};
 
 use crate::server::metrics::*;
-use crate::storage::kv::{Engine, ScanMode, Statistics};
-use crate::storage::mvcc::{check_need_gc, Error as MvccError, GcInfo, MvccReader, MvccTxn};
+use crate::storage::kv::{CursorBuilder, Engine, ScanMode, SnapContext, Statistics};
+use crate::storage::mvcc::{
+    check_need_gc, Error as MvccError, GcInfo, MvccReader, MvccTxn, MAX_TXN_WRITE_SIZE,
+};
 
 use super::applied_lock_collector::{AppliedLockCollector, Callback as LockCollectorCallback};
 use super::config::{GcConfig, GcWorkerConfigManager};
@@ -78,6 +80,13 @@ pub enum GcTask {
         limit: usize,
         callback: Callback<Vec<LockInfo>>,
     },
+    DeleteVersionsByCommitTs {
+        ctx: Context,
+        start_key: Option<Key>,
+        end_key: Option<Key>,
+        commit_ts_set: TsSet,
+        callback: Callback<()>,
+    },
     #[cfg(any(test, feature = "testexport"))]
     Validate(Box<dyn FnOnce(&GcConfig, &Limiter) + Send>),
 }
@@ -88,6 +97,7 @@ impl GcTask {
             GcTask::Gc { .. } => GcCommandKind::gc,
             GcTask::UnsafeDestroyRange { .. } => GcCommandKind::unsafe_destroy_range,
             GcTask::PhysicalScanLock { .. } => GcCommandKind::physical_scan_lock,
+            GcTask::DeleteVersionsByCommitTs { .. } => GcCommandKind::delete_versions_by_commit_ts,
             #[cfg(any(test, feature = "testexport"))]
             GcTask::Validate(_) => GcCommandKind::validate_config,
         }
@@ -118,6 +128,17 @@ impl Display for GcTask {
             GcTask::PhysicalScanLock { max_ts, .. } => f
                 .debug_struct("PhysicalScanLock")
                 .field("max_ts", max_ts)
+                .finish(),
+            GcTask::DeleteVersionsByCommitTs {
+                start_key,
+                end_key,
+                commit_ts_set,
+                ..
+            } => f
+                .debug_struct("DeleteVersionsByCommitTs")
+                .field("start_key", &format!("{:?}", start_key))
+                .field("end_key", &format!("{:?}", end_key))
+                .field("commit_ts_set", &format!("{:?}", commit_ts_set))
                 .finish(),
             #[cfg(any(test, feature = "testexport"))]
             GcTask::Validate(_) => write!(f, "Validate gc worker config"),
@@ -396,6 +417,69 @@ where
         Ok(lock_infos)
     }
 
+    fn handle_delete_versions_by_commit_ts(
+        &self,
+        ctx: &Context,
+        start_key: &Option<Key>,
+        end_key: &Option<Key>,
+        commit_ts_set: &TsSet,
+    ) -> Result<()> {
+        if commit_ts_set.is_empty() {
+            return Ok(());
+        }
+
+        let snap_ctx = SnapContext {
+            pb_ctx: &ctx,
+            ..Default::default()
+        };
+        let snap = self.engine.snapshot(snap_ctx)?;
+
+        let mut txn = Self::new_txn(snap.clone());
+
+        let mut write_cursor = {
+            let (min, max) = commit_ts_set.minmax().unwrap();
+
+            CursorBuilder::new(&snap, CF_WRITE)
+                .fill_cache(false)
+                .prefix_seek(false)
+                .scan_mode(ScanMode::Forward)
+                .range(start_key.clone(), end_key.clone())
+                .hint_min_ts(Some(min))
+                .hint_max_ts(Some(max))
+                .build()?
+        };
+
+        let mut stat = Statistics::default();
+
+        write_cursor.seek_to_first(&mut stat.write);
+
+        while write_cursor.valid()? {
+            let (key, commit_ts) = Key::split_on_ts_for(write_cursor.key(&mut stat.write)).unwrap();
+            let key = Key::from_encoded_slice(key);
+            if commit_ts_set.contains(commit_ts) {
+                let write = WriteRef::parse(write_cursor.value(&mut stat.write)).unwrap();
+                match write.write_type {
+                    WriteType::Put if write.short_value.is_none() => {
+                        txn.delete_value(key.clone(), write.start_ts)
+                    }
+                    WriteType::Put | WriteType::Rollback | WriteType::Delete | WriteType::Lock => {}
+                }
+                txn.delete_write(key, commit_ts);
+            }
+
+            if txn.write_size() >= MAX_TXN_WRITE_SIZE {
+                Self::flush_txn(txn, &self.limiter, &self.engine)?;
+                txn = Self::new_txn(snap.clone());
+            }
+        }
+
+        if txn.write_size() != 0 {
+            Self::flush_txn(txn, &self.limiter, &self.engine)?;
+        }
+
+        Ok(())
+    }
+
     fn update_statistics_metrics(&mut self) {
         let stats = mem::take(&mut self.stats);
 
@@ -496,6 +580,29 @@ where
                     start_key,
                     max_ts,
                     limit,
+                );
+            }
+            GcTask::DeleteVersionsByCommitTs {
+                ctx,
+                start_key,
+                end_key,
+                commit_ts_set,
+                callback,
+            } => {
+                let res = self.handle_delete_versions_by_commit_ts(
+                    &ctx,
+                    &start_key,
+                    &end_key,
+                    &commit_ts_set,
+                );
+                update_metrics(res.is_err());
+                callback(res);
+                slow_log!(
+                    T timer,
+                    "DeleteVersionsByCommitTs start_key {:?}, end_key {:?} commit_ts_set {:?}",
+                    start_key,
+                    end_key,
+                    commit_ts_set,
                 );
             }
             #[cfg(any(test, feature = "testexport"))]
@@ -827,6 +934,30 @@ where
             .as_ref()
             .ok_or_else(|| box_err!("applied_lock_collector not supported"))
             .and_then(move |c| c.stop_collecting(max_ts, callback))
+    }
+
+    pub fn delete_versions_by_commit_ts(
+        &self,
+        ctx: Context,
+        start_key: Option<Key>,
+        end_key: Option<Key>,
+        commit_ts_set: TsSet,
+        callback: Callback<()>,
+    ) -> Result<()> {
+        GC_COMMAND_COUNTER_VEC_STATIC
+            .delete_versions_by_commit_ts
+            .inc();
+        self.check_is_busy(callback).map_or(Ok(()), |callback| {
+            self.worker_scheduler
+                .schedule(GcTask::DeleteVersionsByCommitTs {
+                    ctx,
+                    start_key,
+                    end_key,
+                    commit_ts_set,
+                    callback,
+                })
+                .or_else(handle_gc_task_schedule_error)
+        })
     }
 }
 

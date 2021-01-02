@@ -140,6 +140,18 @@ impl TsSet {
         Self::vec(ts)
     }
 
+    pub fn len(&self) -> usize {
+        match self {
+            TsSet::Empty => 0,
+            TsSet::Vec(vec) => vec.len(),
+            TsSet::Set(set) => set.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Create a `TsSet` from the given vec of timestamps, but it will be forced to use `Vec` as the
     /// internal collection type. When it's sure that the set will be queried at most once, use this
     /// is better than `TsSet::new`, since both the querying on `Vec` and the conversion from `Vec`
@@ -161,6 +173,32 @@ impl TsSet {
             TsSet::Vec(vec) => vec.contains(&ts),
             TsSet::Set(set) => set.contains(&ts),
         }
+    }
+
+    pub fn minmax(&self) -> Option<(TimeStamp, TimeStamp)> {
+        match self {
+            TsSet::Empty => None,
+            TsSet::Vec(vec) => Self::minmax_impl(vec.iter()),
+            TsSet::Set(set) => Self::minmax_impl(set.iter()),
+        }
+    }
+
+    fn minmax_impl<'a>(
+        mut iter: impl Iterator<Item = &'a TimeStamp>,
+    ) -> Option<(TimeStamp, TimeStamp)> {
+        let mut result = None;
+        if let Some(ts) = iter.next() {
+            result = Some((*ts, *ts));
+        }
+        for ts in iter {
+            let (min, max) = result.as_mut().unwrap();
+            if ts < min {
+                *min = *ts;
+            } else if ts > max {
+                *max = *ts;
+            }
+        }
+        result
     }
 }
 

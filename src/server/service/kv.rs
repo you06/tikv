@@ -42,7 +42,7 @@ use raftstore::{DiscardReason, Error as RaftStoreError};
 use tikv_util::future::{paired_future_callback, poll_future_notify};
 use tikv_util::mpsc::batch::{unbounded, BatchCollector, BatchReceiver, Sender};
 use tikv_util::worker::Scheduler;
-use txn_types::{self, Key};
+use txn_types::{self, Key, TsSet};
 
 const GRPC_MSG_MAX_BATCH_SIZE: usize = 128;
 const GRPC_MSG_NOTIFY_SIZE: usize = 8;
@@ -543,10 +543,59 @@ impl<T: RaftStoreRouter<RocksEngine> + 'static, E: Engine, L: LockManager> Tikv
     fn delete_versions_by_commit_ts(
         &mut self,
         ctx: RpcContext<'_>,
-        req: DeleteVersionsByCommitTsRequest,
+        mut req: DeleteVersionsByCommitTsRequest,
         sink: UnarySink<DeleteVersionsByCommitTsResponse>,
     ) {
-        unimplemented!()
+        let begin_instant = Instant::now_coarse();
+
+        let start_key = if req.get_start_key().is_empty() {
+            None
+        } else {
+            Some(Key::from_raw(req.get_start_key()))
+        };
+        let end_key = if req.get_end_key().is_empty() {
+            None
+        } else {
+            Some(Key::from_raw(req.get_end_key()))
+        };
+        let commit_ts_set = TsSet::from_u64s(req.take_commit_ts_list());
+
+        let (cb, f) = paired_future_callback();
+        let res = self.gc_worker.delete_versions_by_commit_ts(
+            req.take_context(),
+            start_key,
+            end_key,
+            commit_ts_set,
+            cb,
+        );
+
+        let task = async move {
+            let res = match res {
+                Err(e) => Err(e),
+                Ok(_) => f.await?,
+            };
+            let mut resp = DeleteVersionsByCommitTsResponse::default();
+            if let Some(err) = extract_region_error(&res) {
+                resp.set_region_error(err);
+            } else if let Err(e) = res {
+                resp.set_error(format!("{}", e));
+            }
+            sink.success(resp).await?;
+            GRPC_MSG_HISTOGRAM_STATIC
+                .delete_versions_by_commit_ts
+                .observe(duration_to_sec(begin_instant.elapsed()));
+            ServerResult::Ok(())
+        }
+        .map_err(|e| {
+            debug!("kv rpc failed";
+                "request" => "delete_versions_by_commit_ts",
+                "err" => ?e
+            );
+            GRPC_MSG_FAIL_COUNTER.delete_versions_by_commit_ts.inc();
+        })
+        .map(|_| ());
+
+        ctx.spawn(task);
     }
 
     fn coprocessor_stream(
