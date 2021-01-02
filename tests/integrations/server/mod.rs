@@ -247,6 +247,11 @@ trait MockKvService {
         WriteCheckpointRequest,
         WriteCheckpointResponse
     );
+    unary_call!(
+        delete_versions_by_commit_ts,
+        DeleteVersionsByCommitTsRequest,
+        DeleteVersionsByCommitTsResponse
+    );
 }
 
 impl<T: MockKvService + Clone + Send + 'static> Tikv for MockKv<T> {
@@ -373,6 +378,11 @@ impl<T: MockKvService + Clone + Send + 'static> Tikv for MockKv<T> {
         write_checkpoint,
         WriteCheckpointRequest,
         WriteCheckpointResponse
+    );
+    unary_call_dispatch!(
+        delete_versions_by_commit_ts,
+        DeleteVersionsByCommitTsRequest,
+        DeleteVersionsByCommitTsResponse
     );
 }
 

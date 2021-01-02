@@ -540,6 +540,15 @@ impl<T: RaftStoreRouter<RocksEngine> + 'static, E: Engine, L: LockManager> Tikv
         ctx.spawn(task);
     }
 
+    fn delete_versions_by_commit_ts(
+        &mut self,
+        ctx: RpcContext<'_>,
+        req: DeleteVersionsByCommitTsRequest,
+        sink: UnarySink<DeleteVersionsByCommitTsResponse>,
+    ) {
+        unimplemented!()
+    }
+
     fn coprocessor_stream(
         &mut self,
         ctx: RpcContext<'_>,
@@ -1146,6 +1155,7 @@ fn handle_batch_commands_request<E: Engine, L: LockManager>(
         Coprocessor, future_cop(cop, Some(peer.to_string())), coprocessor;
         PessimisticLock, future_acquire_pessimistic_lock(storage), kv_pessimistic_lock;
         PessimisticRollback, future_pessimistic_rollback(storage), kv_pessimistic_rollback;
+        DeterministicWrite, future_deterministic_write(storage), deterministic_write;
         Empty, future_handle_empty(), invalid;
     }
 }
