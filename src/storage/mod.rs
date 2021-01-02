@@ -34,6 +34,7 @@
 //! * the [`test_storage`](::test_storage) crate, integration tests for this module,
 //! * the [`engine_traits`](::engine_traits) crate, more detail of the engine abstraction.
 
+pub mod checkpoint;
 pub mod config;
 pub mod errors;
 pub mod kv;
