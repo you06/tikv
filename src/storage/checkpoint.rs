@@ -55,15 +55,15 @@ impl<E: Engine> CheckpointStore<E> {
 
     pub fn write_checkpoint(
         &self,
-        ctx: &Context,
-        key: Key,
-        start_ts: TimeStamp,
-        entry: CheckpointEntry,
+        _ctx: &Context,
+        _key: Key,
+        _start_ts: TimeStamp,
+        _entry: CheckpointEntry,
     ) -> Result<()> {
         unimplemented!()
     }
 
-    pub fn get_checkpoint(&self, ctx: &Context, key: Key) -> Result<CheckpointEntry> {
+    pub fn get_checkpoint(&self, _ctx: &Context, _key: Key) -> Result<CheckpointEntry> {
         unimplemented!()
     }
 }
