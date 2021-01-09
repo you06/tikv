@@ -1,9 +1,6 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use crate::storage::mvcc::{
-    metrics::{MVCC_CONFLICT_COUNTER, MVCC_DUPLICATE_CMD_COUNTER_VEC},
-    ErrorInner, LockType, MvccTxn, Result as MvccResult,
-};
+use crate::storage::mvcc::{metrics::{MVCC_CONFLICT_COUNTER, MVCC_DUPLICATE_CMD_COUNTER_VEC}, ErrorInner, LockType, MvccTxn, Result as MvccResult, ReleasedLock};
 use crate::storage::Snapshot;
 use txn_types::{is_short_value, Mutation, MutationType, TimeStamp, Write, WriteType};
 
@@ -11,31 +8,74 @@ pub fn deterministic_write<S: Snapshot>(
     txn: &mut MvccTxn<S>,
     mutation: Mutation,
     commit_ts: TimeStamp,
-) -> MvccResult<()> {
+) -> MvccResult<Option<ReleasedLock>> {
     // Currently no normal 2PC transaction is allowed to run with deterministic transaction.
-    // Skip lock checking.
 
-    if let Some((written_commit_ts, write)) =
-        txn.reader.seek_write(mutation.key(), TimeStamp::max())?
-    {
-        if written_commit_ts > txn.start_ts {
-            MVCC_CONFLICT_COUNTER.stale_deterministic_write.inc();
-            return Err(ErrorInner::WriteConflict {
-                start_ts: txn.start_ts,
-                conflict_start_ts: write.start_ts,
-                conflict_commit_ts: written_commit_ts,
-                key: mutation.key().to_raw()?,
-                primary: vec![],
+    match txn.reader.load_lock(mutation.key())? {
+        Some(lock) if lock.ts == txn.start_ts => {
+            if lock.lock_type != LockType::Pessimistic {
+                return Err(ErrorInner::LockTypeNotMatch {
+                    start_ts: txn.start_ts,
+                    key: mutation.key().to_raw()?,
+                    pessimistic: false,
+                }
+                    .into());
             }
-            .into());
         }
-        if written_commit_ts == commit_ts {
-            // Is here other cases?
-            assert_eq!(write.start_ts, txn.start_ts);
-            MVCC_DUPLICATE_CMD_COUNTER_VEC.deterministic_write.inc();
-            return Ok(());
+        _ => {
+            // Copied from action/commit.rs
+            return match txn.reader.get_txn_commit_record(mutation.key(), txn.start_ts)?.info() {
+                Some((_, WriteType::Rollback)) | None => {
+                    MVCC_CONFLICT_COUNTER.commit_lock_not_found.inc();
+                    // None: related Rollback has been collapsed.
+                    // Rollback: rollback by concurrent transaction.
+                    info!(
+                        "deterministic_write: lock not found";
+                        "key" => %mutation.key(),
+                        "start_ts" => txn.start_ts,
+                        "commit_ts" => commit_ts,
+                    );
+                    Err(ErrorInner::TxnLockNotFound {
+                        start_ts: txn.start_ts,
+                        commit_ts,
+                        key: mutation.key().to_raw()?,
+                    }
+                        .into())
+                }
+                // Committed by concurrent transaction.
+                Some((_, WriteType::Put))
+                | Some((_, WriteType::Delete))
+                | Some((_, WriteType::Lock)) => {
+                    MVCC_DUPLICATE_CMD_COUNTER_VEC.deterministic_write.inc();
+                    Ok(None)
+                }
+            };
         }
     }
+
+    // TODO: This is unnecessary after completely implementing the lock mechanism (with
+    // coinflict check).
+    // if let Some((written_commit_ts, write)) =
+    //     txn.reader.seek_write(mutation.key(), TimeStamp::max())?
+    // {
+    //     if written_commit_ts > txn.start_ts {
+    //         MVCC_CONFLICT_COUNTER.stale_deterministic_write.inc();
+    //         return Err(ErrorInner::WriteConflict {
+    //             start_ts: txn.start_ts,
+    //             conflict_start_ts: write.start_ts,
+    //             conflict_commit_ts: written_commit_ts,
+    //             key: mutation.key().to_raw()?,
+    //             primary: vec![],
+    //         }
+    //         .into());
+    //     }
+    //     if written_commit_ts == commit_ts {
+    //         // Is here other cases?
+    //         assert_eq!(write.start_ts, txn.start_ts);
+    //         MVCC_DUPLICATE_CMD_COUNTER_VEC.deterministic_write.inc();
+    //         return Ok(None);
+    //     }
+    // }
 
     match mutation.mutation_type() {
         MutationType::Put | MutationType::Lock | MutationType::Delete => {}
@@ -64,7 +104,7 @@ pub fn deterministic_write<S: Snapshot>(
     if let Some(value) = value {
         txn.put_value(key.clone(), txn.start_ts, value);
     }
-    txn.put_write(key, commit_ts, write.as_ref().to_bytes());
+    txn.put_write(key.clone(), commit_ts, write.as_ref().to_bytes());
 
-    Ok(())
+    Ok(txn.unlock_key(key, true))
 }
