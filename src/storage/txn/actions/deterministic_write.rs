@@ -1,6 +1,9 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use crate::storage::mvcc::{metrics::{MVCC_CONFLICT_COUNTER, MVCC_DUPLICATE_CMD_COUNTER_VEC}, ErrorInner, LockType, MvccTxn, Result as MvccResult, ReleasedLock};
+use crate::storage::mvcc::{
+    metrics::{MVCC_CONFLICT_COUNTER, MVCC_DUPLICATE_CMD_COUNTER_VEC},
+    ErrorInner, LockType, MvccTxn, ReleasedLock, Result as MvccResult,
+};
 use crate::storage::Snapshot;
 use txn_types::{is_short_value, Mutation, MutationType, TimeStamp, Write, WriteType};
 
@@ -19,12 +22,16 @@ pub fn deterministic_write<S: Snapshot>(
                     key: mutation.key().to_raw()?,
                     pessimistic: false,
                 }
-                    .into());
+                .into());
             }
         }
         _ => {
             // Copied from action/commit.rs
-            return match txn.reader.get_txn_commit_record(mutation.key(), txn.start_ts)?.info() {
+            return match txn
+                .reader
+                .get_txn_commit_record(mutation.key(), txn.start_ts)?
+                .info()
+            {
                 Some((_, WriteType::Rollback)) | None => {
                     MVCC_CONFLICT_COUNTER.commit_lock_not_found.inc();
                     // None: related Rollback has been collapsed.
@@ -40,7 +47,7 @@ pub fn deterministic_write<S: Snapshot>(
                         commit_ts,
                         key: mutation.key().to_raw()?,
                     }
-                        .into())
+                    .into())
                 }
                 // Committed by concurrent transaction.
                 Some((_, WriteType::Put))

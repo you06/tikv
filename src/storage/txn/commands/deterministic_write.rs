@@ -6,7 +6,8 @@ use crate::storage::kv::WriteData;
 use crate::storage::lock_manager::LockManager;
 use crate::storage::mvcc::MvccTxn;
 use crate::storage::txn::commands::{
-    Command, CommandExt, ResponsePolicy, TypedCommand, WriteCommand, WriteContext, WriteResult,
+    Command, CommandExt, ReleasedLocks, ResponsePolicy, TypedCommand, WriteCommand, WriteContext,
+    WriteResult,
 };
 use crate::storage::txn::{deterministic_write, Error, ErrorInner, Result};
 use crate::storage::{ProcessResult, Snapshot, TxnStatus};
@@ -68,9 +69,11 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for DeterministicWrite {
 
         let rows = self.mutations.len();
 
+        let mut released_locks = ReleasedLocks::new(self.start_ts, self.commit_ts);
         for m in self.mutations {
-            deterministic_write(&mut txn, m, self.commit_ts)?;
+            released_locks.push(deterministic_write(&mut txn, m, self.commit_ts)?);
         }
+        released_locks.wake_up(context.lock_mgr);
 
         context.statistics.add(&txn.take_statistics());
         let pr = ProcessResult::TxnStatus {
