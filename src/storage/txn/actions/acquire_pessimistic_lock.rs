@@ -51,7 +51,9 @@ pub fn acquire_pessimistic_lock<S: Snapshot>(
         if lock.ts != txn.start_ts {
             return Err(ErrorInner::KeyIsLocked(lock.into_lock_info(key.into_raw()?)).into());
         }
-        if lock.lock_type != LockType::Pessimistic {
+        if (lock.lock_type != LockType::Pessimistic && !is_deterministic)
+            || (lock.lock_type != LockType::Deterministic && is_deterministic)
+        {
             return Err(ErrorInner::LockTypeNotMatch {
                 start_ts: txn.start_ts,
                 key: key.into_raw()?,
