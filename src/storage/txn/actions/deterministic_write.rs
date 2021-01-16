@@ -15,60 +15,64 @@ pub fn deterministic_write<S: Snapshot>(
 ) -> MvccResult<Option<ReleasedLock>> {
     // Currently no normal 2PC transaction is allowed to run with deterministic transaction.
 
-    let has_lock = match txn.reader.load_lock(mutation.key())? {
-        Some(lock) if lock.ts == txn.start_ts => {
-            if lock.lock_type != LockType::Deterministic {
-                return Err(ErrorInner::LockTypeNotMatch {
-                    start_ts: txn.start_ts,
-                    key: mutation.key().to_raw()?,
-                    pessimistic: false,
+    let has_lock = if txn.start_ts.is_zero() {
+        false
+    } else {
+        match txn.reader.load_lock(mutation.key())? {
+            Some(lock) if lock.ts == txn.start_ts => {
+                if lock.lock_type != LockType::Deterministic {
+                    return Err(ErrorInner::LockTypeNotMatch {
+                        start_ts: txn.start_ts,
+                        key: mutation.key().to_raw()?,
+                        pessimistic: false,
+                    }
+                        .into());
                 }
-                .into());
+                true
             }
-            true
-        }
-        l => {
-            // Copied from action/commit.rs
-            match txn
-                .reader
-                .get_txn_commit_record(mutation.key(), txn.start_ts)?
-                .info()
-            {
-                Some((_, WriteType::Rollback)) | None => {
-                    if skip_lock || txn.start_ts.is_zero() {
-                        if let Some(l) = l {
-                            return Err(ErrorInner::KeyIsLocked(
-                                l.into_lock_info(mutation.key().to_raw()?),
-                            )
-                            .into());
-                        }
-                    } else {
-                        MVCC_CONFLICT_COUNTER.commit_lock_not_found.inc();
-                        // None: related Rollback has been collapsed.
-                        // Rollback: rollback by concurrent transaction.
-                        info!(
+            l => {
+                // Copied from action/commit.rs
+                match txn
+                    .reader
+                    .get_txn_commit_record(mutation.key(), txn.start_ts)?
+                    .info()
+                {
+                    Some((_, WriteType::Rollback)) | None => {
+                        if skip_lock || txn.start_ts.is_zero() {
+                            if let Some(l) = l {
+                                return Err(ErrorInner::KeyIsLocked(
+                                    l.into_lock_info(mutation.key().to_raw()?),
+                                )
+                                    .into());
+                            }
+                        } else {
+                            MVCC_CONFLICT_COUNTER.commit_lock_not_found.inc();
+                            // None: related Rollback has been collapsed.
+                            // Rollback: rollback by concurrent transaction.
+                            info!(
                             "deterministic_write: lock not found";
                             "key" => %mutation.key(),
                             "start_ts" => txn.start_ts,
                             "commit_ts" => commit_ts,
                         );
-                        return Err(ErrorInner::TxnLockNotFound {
-                            start_ts: txn.start_ts,
-                            commit_ts,
-                            key: mutation.key().to_raw()?,
+                            return Err(ErrorInner::TxnLockNotFound {
+                                start_ts: txn.start_ts,
+                                commit_ts,
+                                key: mutation.key().to_raw()?,
+                            }
+                                .into());
                         }
-                        .into());
                     }
-                }
-                // Committed by concurrent transaction.
-                Some((_, WriteType::Put))
-                | Some((_, WriteType::Delete))
-                | Some((_, WriteType::Lock)) => {
-                    MVCC_DUPLICATE_CMD_COUNTER_VEC.deterministic_write.inc();
-                    return Ok(None);
-                }
-            };
-            false
+                    // Committed by concurrent transaction.
+                    Some((_, WriteType::Put))
+                    | Some((_, WriteType::Delete))
+                    | Some((_, WriteType::Lock)) => {
+                        MVCC_DUPLICATE_CMD_COUNTER_VEC.deterministic_write.inc();
+                        return Ok(None);
+                    }
+                };
+                false
+            }
         }
     };
 
