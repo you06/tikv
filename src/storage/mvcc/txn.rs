@@ -1474,6 +1474,7 @@ mod tests {
                     start_ts.into(),
                     false,
                     TimeStamp::zero(),
+                    false,
                 )
                 .unwrap();
                 write(WriteData::from_modifies(txn.into_modifies()));

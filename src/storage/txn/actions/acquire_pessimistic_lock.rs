@@ -15,6 +15,7 @@ pub fn acquire_pessimistic_lock<S: Snapshot>(
     for_update_ts: TimeStamp,
     need_value: bool,
     min_commit_ts: TimeStamp,
+    is_deterministic: bool,
 ) -> MvccResult<Option<Value>> {
     fail_point!("acquire_pessimistic_lock", |err| Err(
         crate::storage::mvcc::txn::make_txn_error(err, &key, txn.start_ts,).into()
@@ -26,9 +27,15 @@ pub fn acquire_pessimistic_lock<S: Snapshot>(
         lock_ttl: u64,
         for_update_ts: TimeStamp,
         min_commit_ts: TimeStamp,
+        is_deterministic: bool,
     ) -> Lock {
+        let lock_type = if is_deterministic {
+            LockType::Deterministic
+        } else {
+            LockType::Pessimistic
+        };
         Lock::new(
-            LockType::Pessimistic,
+            lock_type,
             primary.to_vec(),
             start_ts,
             lock_ttl,
@@ -65,6 +72,7 @@ pub fn acquire_pessimistic_lock<S: Snapshot>(
                 lock_ttl,
                 for_update_ts,
                 min_commit_ts,
+                is_deterministic,
             );
             txn.put_lock(key, &lock);
         } else {
@@ -153,6 +161,7 @@ pub fn acquire_pessimistic_lock<S: Snapshot>(
         lock_ttl,
         for_update_ts,
         min_commit_ts,
+        is_deterministic,
     );
     txn.put_lock(key, &lock);
 
@@ -199,6 +208,7 @@ pub mod tests {
             for_update_ts.into(),
             need_value,
             min_commit_ts,
+            false,
         )
         .unwrap();
         let modifies = txn.into_modifies();
@@ -346,6 +356,7 @@ pub mod tests {
             for_update_ts.into(),
             need_value,
             min_commit_ts,
+            false,
         )
         .unwrap_err()
     }

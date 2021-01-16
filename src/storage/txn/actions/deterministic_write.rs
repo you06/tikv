@@ -16,7 +16,7 @@ pub fn deterministic_write<S: Snapshot>(
 
     match txn.reader.load_lock(mutation.key())? {
         Some(lock) if lock.ts == txn.start_ts => {
-            if lock.lock_type != LockType::Pessimistic {
+            if lock.lock_type != LockType::Deterministic {
                 return Err(ErrorInner::LockTypeNotMatch {
                     start_ts: txn.start_ts,
                     key: mutation.key().to_raw()?,

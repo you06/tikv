@@ -36,6 +36,20 @@ pub fn commit<S: Snapshot>(
                 .into());
             }
 
+            if lock.lock_type == LockType::Deterministic {
+                warn!("trying to call commit on a deterministic lock";
+                    "key" => %key,
+                    "start_ts" => txn.start_ts,
+                    "commit_ts" => commit_ts,
+                );
+                return Err(ErrorInner::LockTypeNotMatch {
+                    start_ts: lock.ts,
+                    key: key.to_raw()?,
+                    pessimistic: lock.is_pessimistic_txn(),
+                }
+                .into());
+            }
+
             // It's an abnormal routine since pessimistic locks shouldn't be committed in our
             // transaction model. But a pessimistic lock will be left if the pessimistic
             // rollback request fails to send and the transaction need not to acquire

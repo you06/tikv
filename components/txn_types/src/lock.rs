@@ -15,12 +15,14 @@ pub enum LockType {
     Delete,
     Lock,
     Pessimistic,
+    Deterministic,
 }
 
 const FLAG_PUT: u8 = b'P';
 const FLAG_DELETE: u8 = b'D';
 const FLAG_LOCK: u8 = b'L';
 const FLAG_PESSIMISTIC: u8 = b'S';
+const FLAG_DETERMINISTIC: u8 = b'T';
 
 const FOR_UPDATE_TS_PREFIX: u8 = b'f';
 const TXN_SIZE_PREFIX: u8 = b't';
@@ -44,6 +46,7 @@ impl LockType {
             FLAG_DELETE => Some(LockType::Delete),
             FLAG_LOCK => Some(LockType::Lock),
             FLAG_PESSIMISTIC => Some(LockType::Pessimistic),
+            FLAG_DETERMINISTIC => Some(LockType::Deterministic),
             _ => None,
         }
     }
@@ -54,6 +57,7 @@ impl LockType {
             LockType::Delete => FLAG_DELETE,
             LockType::Lock => FLAG_LOCK,
             LockType::Pessimistic => FLAG_PESSIMISTIC,
+            LockType::Deterministic => FLAG_DETERMINISTIC,
         }
     }
 }
@@ -285,6 +289,7 @@ impl Lock {
             LockType::Delete => Op::Del,
             LockType::Lock => Op::Lock,
             LockType::Pessimistic => Op::PessimisticLock,
+            LockType::Deterministic => Op::Lock,
         };
         info.set_lock_type(lock_type);
         info.set_lock_for_update_ts(self.for_update_ts.into_inner());

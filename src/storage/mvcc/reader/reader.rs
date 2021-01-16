@@ -661,6 +661,7 @@ mod tests {
                 for_update_ts,
                 false,
                 TimeStamp::zero(),
+                false,
             )
             .unwrap();
             self.write(txn.into_modifies());

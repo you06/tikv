@@ -203,6 +203,7 @@ impl From<PessimisticLockRequest> for TypedCommand<StorageResult<PessimisticLock
             WaitTimeout::from_encoded(req.get_wait_timeout()),
             req.get_return_values(),
             req.get_min_commit_ts().into(),
+            req.get_is_deterministic(),
             req.take_context(),
         )
     }

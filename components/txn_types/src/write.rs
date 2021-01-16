@@ -36,6 +36,7 @@ impl WriteType {
             LockType::Delete => Some(WriteType::Delete),
             LockType::Lock => Some(WriteType::Lock),
             LockType::Pessimistic => None,
+            LockType::Deterministic => None,
         }
     }
 

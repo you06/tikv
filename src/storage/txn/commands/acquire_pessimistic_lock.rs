@@ -37,6 +37,7 @@ command! {
             /// later read in the same transaction.
             return_values: bool,
             min_commit_ts: TimeStamp,
+            is_deterministic: bool,
         }
 }
 
@@ -93,6 +94,7 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for AcquirePessimisticLock 
                 self.for_update_ts,
                 self.return_values,
                 self.min_commit_ts,
+                self.is_deterministic,
             ) {
                 Ok(val) => {
                     if self.return_values {

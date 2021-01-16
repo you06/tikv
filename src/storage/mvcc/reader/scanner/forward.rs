@@ -2151,6 +2151,7 @@ mod delta_entry_tests {
                         must_pessimistic_prewrite_lock(&engine, key, key, ts, for_update_ts, true)
                     }
                     LockType::Pessimistic => {}
+                    LockType::Deterministic => unreachable!(),
                 }
             }
         }
