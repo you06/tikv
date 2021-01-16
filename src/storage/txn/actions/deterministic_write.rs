@@ -50,17 +50,18 @@ pub fn deterministic_write<S: Snapshot>(
                             // None: related Rollback has been collapsed.
                             // Rollback: rollback by concurrent transaction.
                             info!(
-                            "deterministic_write: lock not found";
-                            "key" => %mutation.key(),
-                            "start_ts" => txn.start_ts,
-                            "commit_ts" => commit_ts,
-                        );
-                            return Err(ErrorInner::TxnLockNotFound {
-                                start_ts: txn.start_ts,
-                                commit_ts,
-                                key: mutation.key().to_raw()?,
-                            }
-                                .into());
+                                "deterministic_write: lock not found";
+                                "key" => %mutation.key(),
+                                "start_ts" => txn.start_ts,
+                                "commit_ts" => commit_ts,
+                            );
+                            // return Err(ErrorInner::TxnLockNotFound {
+                            //     start_ts: txn.start_ts,
+                            //     commit_ts,
+                            //     key: mutation.key().to_raw()?,
+                            // }
+                            //     .into());
+                            ()
                         }
                     }
                     // Committed by concurrent transaction.
