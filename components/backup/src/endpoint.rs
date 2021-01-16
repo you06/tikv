@@ -172,6 +172,7 @@ impl BackupRange {
                         &key,
                         backup_ts,
                         &Default::default(),
+                        0.into(),
                     )
                 },
             )

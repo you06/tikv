@@ -117,6 +117,7 @@ impl<E: Engine> Endpoint<E> {
                             key,
                             start_ts,
                             &req_ctx.bypass_locks,
+                            0.into(),
                         )
                     })
                     .map_err(MvccError::from)?;

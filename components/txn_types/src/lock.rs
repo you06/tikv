@@ -305,10 +305,12 @@ impl Lock {
         key: &Key,
         ts: TimeStamp,
         bypass_locks: &TsSet,
+        bypass_start_ts: TimeStamp,
     ) -> Result<()> {
         if lock.ts >= ts
             || lock.lock_type == LockType::Lock
             || lock.lock_type == LockType::Pessimistic
+            || lock.ts == bypass_start_ts
         {
             // Ignore lock when lock.ts > ts or lock's type is Lock or Pessimistic
             return Ok(());
@@ -590,10 +592,10 @@ mod tests {
         let empty = Default::default();
 
         // Ignore the lock if read ts is less than the lock version
-        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 50.into(), &empty).unwrap();
+        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 50.into(), &empty, 0.into()).unwrap();
 
         // Returns the lock if read ts >= lock version
-        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 110.into(), &empty).unwrap_err();
+        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 110.into(), &empty, 0.into()).unwrap_err();
 
         // Ignore locks that occurs in the `bypass_locks` set.
         Lock::check_ts_conflict(
@@ -601,6 +603,7 @@ mod tests {
             &key,
             110.into(),
             &TsSet::from_u64s(vec![109]),
+            0.into(),
         )
         .unwrap_err();
         Lock::check_ts_conflict(
@@ -608,6 +611,7 @@ mod tests {
             &key,
             110.into(),
             &TsSet::from_u64s(vec![110]),
+            0.into(),
         )
         .unwrap_err();
         Lock::check_ts_conflict(
@@ -615,6 +619,7 @@ mod tests {
             &key,
             110.into(),
             &TsSet::from_u64s(vec![100]),
+            0.into(),
         )
         .unwrap();
         Lock::check_ts_conflict(
@@ -622,19 +627,20 @@ mod tests {
             &key,
             110.into(),
             &TsSet::from_u64s(vec![99, 101, 102, 100, 80]),
+            0.into(),
         )
         .unwrap();
 
         // Ignore the lock if it is Lock or Pessimistic.
         lock.lock_type = LockType::Lock;
-        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 110.into(), &empty).unwrap();
+        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 110.into(), &empty, 0.into()).unwrap();
         lock.lock_type = LockType::Pessimistic;
-        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 110.into(), &empty).unwrap();
+        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 110.into(), &empty, 0.into()).unwrap();
 
         // Ignore the primary lock when reading the latest committed version by setting u64::MAX as ts
         lock.lock_type = LockType::Put;
         lock.primary = b"foo".to_vec();
-        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, TimeStamp::max(), &empty).unwrap();
+        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, TimeStamp::max(), &empty, 0.into()).unwrap();
 
         // Should not ignore the primary lock of an async commit transaction even if setting u64::MAX as ts
         let async_commit_lock = lock.clone().use_async_commit(vec![]);
@@ -643,17 +649,18 @@ mod tests {
             &key,
             TimeStamp::max(),
             &empty,
+            0.into(),
         )
         .unwrap_err();
 
         // Should not ignore the secondary lock even though reading the latest version
         lock.primary = b"bar".to_vec();
-        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, TimeStamp::max(), &empty).unwrap_err();
+        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, TimeStamp::max(), &empty, 0.into()).unwrap_err();
 
         // Ignore the lock if read ts is less than min_commit_ts
         lock.min_commit_ts = 150.into();
-        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 140.into(), &empty).unwrap();
-        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 150.into(), &empty).unwrap_err();
-        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 160.into(), &empty).unwrap_err();
+        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 140.into(), &empty, 0.into()).unwrap();
+        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 150.into(), &empty, 0.into()).unwrap_err();
+        Lock::check_ts_conflict(Cow::Borrowed(&lock), &key, 160.into(), &empty, 0.into()).unwrap_err();
     }
 }

@@ -157,6 +157,7 @@ impl<S: Snapshot> BackwardKvScanner<S> {
                             &current_user_key,
                             ts,
                             &self.cfg.bypass_locks,
+                            0.into(),
                         )
                         .map(|_| None)
                         .map_err(Into::into);

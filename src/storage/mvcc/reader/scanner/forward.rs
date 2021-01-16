@@ -550,6 +550,7 @@ fn scan_latest_handle_lock<S: Snapshot, T>(
                 &current_user_key,
                 cfg.ts,
                 &cfg.bypass_locks,
+                0.into(),
             )
             .map(|_| ())
         }

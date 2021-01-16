@@ -212,7 +212,7 @@ impl<S: Snapshot> MvccReader<S> {
     /// Returns the blocking lock as the `Err` variant.
     fn check_lock(&mut self, key: &Key, ts: TimeStamp) -> Result<()> {
         if let Some(lock) = self.load_lock(key)? {
-            if let Err(e) = Lock::check_ts_conflict(Cow::Owned(lock), key, ts, &Default::default())
+            if let Err(e) = Lock::check_ts_conflict(Cow::Owned(lock), key, ts, &Default::default(), 0.into())
             {
                 self.statistics.lock.processed_keys += 1;
                 return Err(e.into());

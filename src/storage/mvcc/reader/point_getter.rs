@@ -17,6 +17,7 @@ pub struct PointGetterBuilder<S: Snapshot> {
     omit_value: bool,
     isolation_level: IsolationLevel,
     ts: TimeStamp,
+    bypass_start_ts: TimeStamp,
     bypass_locks: TsSet,
     check_has_newer_ts_data: bool,
 }
@@ -33,6 +34,7 @@ impl<S: Snapshot> PointGetterBuilder<S> {
             ts,
             bypass_locks: Default::default(),
             check_has_newer_ts_data: false,
+            bypass_start_ts: Default::default(),
         }
     }
 
@@ -75,6 +77,15 @@ impl<S: Snapshot> PointGetterBuilder<S> {
         self
     }
 
+    /// Set a set to start_ts that the reading process can bypass.
+    ///
+    /// Defaults to none.
+    #[inline]
+    pub fn bypass_start_ts(mut self, ts: TimeStamp) -> Self {
+        self.bypass_start_ts = ts;
+        self
+    }
+
     /// Set a set to locks that the reading process can bypass.
     ///
     /// Defaults to none.
@@ -113,6 +124,7 @@ impl<S: Snapshot> PointGetterBuilder<S> {
             omit_value: self.omit_value,
             isolation_level: self.isolation_level,
             ts: self.ts,
+            bypass_start_ts: self.bypass_start_ts,
             bypass_locks: self.bypass_locks,
             met_newer_ts_data: if self.check_has_newer_ts_data {
                 NewerTsCheckState::NotMetYet
@@ -139,6 +151,7 @@ pub struct PointGetter<S: Snapshot> {
     omit_value: bool,
     isolation_level: IsolationLevel,
     ts: TimeStamp,
+    bypass_start_ts: TimeStamp,
     bypass_locks: TsSet,
     met_newer_ts_data: NewerTsCheckState,
 
@@ -206,7 +219,7 @@ impl<S: Snapshot> PointGetter<S> {
                 self.met_newer_ts_data = NewerTsCheckState::Met;
             }
             if let Err(e) =
-                Lock::check_ts_conflict(Cow::Owned(lock), user_key, self.ts, &self.bypass_locks)
+                Lock::check_ts_conflict(Cow::Owned(lock), user_key, self.ts, &self.bypass_locks, self.bypass_start_ts)
             {
                 self.statistics.lock.processed_keys += 1;
                 Err(e.into())

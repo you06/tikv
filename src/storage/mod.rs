@@ -255,6 +255,7 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
         mut ctx: Context,
         key: Key,
         start_ts: TimeStamp,
+        bypass_start_ts: TimeStamp,
     ) -> impl Future<Output = Result<(Option<Value>, Statistics, PerfStatisticsDelta)>> {
         const CMD: CommandKind = CommandKind::get;
         let priority = ctx.get_priority();
@@ -284,6 +285,7 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
                     start_ts,
                     &bypass_locks,
                     &concurrency_manager,
+                    bypass_start_ts,
                 )?;
                 let snapshot =
                     Self::with_tls_engine(|engine| Self::snapshot(engine, snap_ctx)).await?;
@@ -368,6 +370,7 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
                         let fill_cache = !ctx.get_not_fill_cache();
                         let bypass_locks = TsSet::vec_from_u64s(ctx.take_resolved_locks());
                         let region_id = ctx.get_region_id();
+                        let bypass_start_ts = req.get_start_ts().into();
 
                         let snap_ctx = match prepare_snap_ctx(
                             &ctx,
@@ -375,6 +378,7 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
                             start_ts,
                             &bypass_locks,
                             &concurrency_manager,
+                            bypass_start_ts,
                         ) {
                             Ok(mut snap_ctx) => {
                                 snap_ctx.read_id = read_id.clone();
@@ -395,6 +399,7 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
                             fill_cache,
                             bypass_locks,
                             region_id,
+                            bypass_start_ts,
                         )));
                     }
                     Self::with_tls_engine(|engine| engine.release_snapshot());
@@ -407,6 +412,7 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
                             fill_cache,
                             bypass_locks,
                             region_id,
+                            bypass_start_ts,
                         ) = match req_snap {
                             Ok(req_snap) => req_snap,
                             Err(e) => {
@@ -421,6 +427,7 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
                                     .isolation_level(isolation_level)
                                     .multi(false)
                                     .bypass_locks(bypass_locks)
+                                    .bypass_start_ts(bypass_start_ts)
                                     .build()
                                 {
                                     Ok(mut point_getter) => {
@@ -465,6 +472,7 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
         mut ctx: Context,
         keys: Vec<Key>,
         start_ts: TimeStamp,
+        bypass_start_ts: TimeStamp,
     ) -> impl Future<Output = Result<(Vec<Result<KvPair>>, Statistics, PerfStatisticsDelta)>> {
         const CMD: CommandKind = CommandKind::batch_get;
         let priority = ctx.get_priority();
@@ -491,7 +499,7 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
                 let bypass_locks = TsSet::from_u64s(ctx.take_resolved_locks());
 
                 let snap_ctx =
-                    prepare_snap_ctx(&ctx, &keys, start_ts, &bypass_locks, &concurrency_manager)?;
+                    prepare_snap_ctx(&ctx, &keys, start_ts, &bypass_locks, &concurrency_manager, bypass_start_ts)?;
                 let snapshot =
                     Self::with_tls_engine(|engine| Self::snapshot(engine, snap_ctx)).await?;
                 {
@@ -608,6 +616,7 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
                                 &key,
                                 start_ts,
                                 &bypass_locks,
+                                0.into(),
                             )
                         })
                         .map_err(mvcc::Error::from)?;
@@ -1459,6 +1468,7 @@ fn prepare_snap_ctx<'a>(
     start_ts: TimeStamp,
     bypass_locks: &'a TsSet,
     concurrency_manager: &ConcurrencyManager,
+    bypass_start_ts: TimeStamp,
 ) -> Result<SnapContext<'a>> {
     // Update max_ts and check the in-memory lock table before getting the snapshot
     concurrency_manager.update_max_ts(start_ts);
@@ -1468,7 +1478,7 @@ fn prepare_snap_ctx<'a>(
         for key in keys.clone() {
             concurrency_manager
                 .read_key_check(&key, |lock| {
-                    Lock::check_ts_conflict(Cow::Borrowed(lock), &key, start_ts, bypass_locks)
+                    Lock::check_ts_conflict(Cow::Borrowed(lock), &key, start_ts, bypass_locks, bypass_start_ts)
                 })
                 .map_err(mvcc::Error::from)?;
         }

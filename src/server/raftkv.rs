@@ -726,6 +726,7 @@ impl ReadIndexObserver for ReplicaReadLockChecker {
                             key,
                             start_ts,
                             &Default::default(),
+                            0.into(),
                         )
                     },
                 );
