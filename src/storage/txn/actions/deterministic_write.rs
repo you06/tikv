@@ -35,7 +35,7 @@ pub fn deterministic_write<S: Snapshot>(
                 .info()
             {
                 Some((_, WriteType::Rollback)) | None => {
-                    if skip_lock {
+                    if skip_lock || txn.start_ts.is_zero() {
                         if let Some(l) = l {
                             return Err(ErrorInner::KeyIsLocked(
                                 l.into_lock_info(mutation.key().to_raw()?),

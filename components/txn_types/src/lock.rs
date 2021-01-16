@@ -306,7 +306,7 @@ impl Lock {
         ts: TimeStamp,
         bypass_locks: &TsSet,
     ) -> Result<()> {
-        if lock.ts > ts
+        if lock.ts >= ts
             || lock.lock_type == LockType::Lock
             || lock.lock_type == LockType::Pessimistic
         {
