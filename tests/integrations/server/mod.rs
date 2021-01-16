@@ -241,12 +241,12 @@ trait MockKvService {
         DeterministicWriteRequest,
         DeterministicWriteResponse
     );
-    unary_call!(get_checkpoint, GetCheckpointRequest, GetCheckpointResponse);
-    unary_call!(
-        write_checkpoint,
-        WriteCheckpointRequest,
-        WriteCheckpointResponse
-    );
+    // unary_call!(get_checkpoint, GetCheckpointRequest, GetCheckpointResponse);
+    // unary_call!(
+    //     write_checkpoint,
+    //     WriteCheckpointRequest,
+    //     WriteCheckpointResponse
+    // );
     unary_call!(
         delete_versions_by_commit_ts,
         DeleteVersionsByCommitTsRequest,
@@ -373,12 +373,12 @@ impl<T: MockKvService + Clone + Send + 'static> Tikv for MockKv<T> {
         DeterministicWriteRequest,
         DeterministicWriteResponse
     );
-    unary_call_dispatch!(get_checkpoint, GetCheckpointRequest, GetCheckpointResponse);
-    unary_call_dispatch!(
-        write_checkpoint,
-        WriteCheckpointRequest,
-        WriteCheckpointResponse
-    );
+    // unary_call_dispatch!(get_checkpoint, GetCheckpointRequest, GetCheckpointResponse);
+    // unary_call_dispatch!(
+    //     write_checkpoint,
+    //     WriteCheckpointRequest,
+    //     WriteCheckpointResponse
+    // );
     unary_call_dispatch!(
         delete_versions_by_commit_ts,
         DeleteVersionsByCommitTsRequest,

@@ -54,8 +54,8 @@ make_auto_flush_static_metric! {
         split_region,
         read_index,
         deterministic_write,
-        get_checkpoint,
-        write_checkpoint,
+        // get_checkpoint,
+        // write_checkpoint,
         delete_versions_by_commit_ts,
     }
 

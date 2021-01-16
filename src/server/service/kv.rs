@@ -271,23 +271,23 @@ impl<T: RaftStoreRouter<RocksEngine> + 'static, E: Engine, L: LockManager> Tikv
         DeterministicWriteResponse
     );
 
-    fn get_checkpoint(
-        &mut self,
-        _: RpcContext<'_>,
-        _req: GetCheckpointRequest,
-        _sink: UnarySink<GetCheckpointResponse>,
-    ) {
-        unimplemented!();
-    }
-
-    fn write_checkpoint(
-        &mut self,
-        _: RpcContext<'_>,
-        _req: WriteCheckpointRequest,
-        _sink: UnarySink<WriteCheckpointResponse>,
-    ) {
-        unimplemented!();
-    }
+    // fn get_checkpoint(
+    //     &mut self,
+    //     _: RpcContext<'_>,
+    //     _req: GetCheckpointRequest,
+    //     _sink: UnarySink<GetCheckpointResponse>,
+    // ) {
+    //     unimplemented!();
+    // }
+    //
+    // fn write_checkpoint(
+    //     &mut self,
+    //     _: RpcContext<'_>,
+    //     _req: WriteCheckpointRequest,
+    //     _sink: UnarySink<WriteCheckpointResponse>,
+    // ) {
+    //     unimplemented!();
+    // }
 
     fn kv_import(&mut self, _: RpcContext<'_>, _: ImportRequest, _: UnarySink<ImportResponse>) {
         unimplemented!();

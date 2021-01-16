@@ -453,4 +453,13 @@ impl<C: PdMocker + Send + Sync + 'static> Pd for PdMock<C> {
     ) {
         todo!()
     }
+
+    fn set_checkpoint(
+        &mut self,
+        _: grpcio::RpcContext<'_>,
+        _: kvproto::pdpb::SetCheckpointRequest,
+        _: grpcio::UnarySink<kvproto::pdpb::SetCheckpointResponse>,
+    ) {
+        todo!()
+    }
 }

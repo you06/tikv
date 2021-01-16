@@ -356,7 +356,7 @@ impl From<DeterministicWriteRequest> for TypedCommand<TxnStatus> {
     fn from(mut req: DeterministicWriteRequest) -> Self {
         DeterministicWrite::new(
             req.take_mutations().into_iter().map(Into::into).collect(),
-            req.get_start_version().into(),
+            deterministic_write::VecU64Wrapper(req.take_start_version()),
             req.get_commit_ts().into(),
             req.get_skip_lock(),
             req.take_context(),
