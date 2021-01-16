@@ -358,6 +358,7 @@ impl From<DeterministicWriteRequest> for TypedCommand<TxnStatus> {
             req.take_mutations().into_iter().map(Into::into).collect(),
             req.get_start_version().into(),
             req.get_commit_ts().into(),
+            req.get_skip_lock(),
             req.take_context(),
         )
     }

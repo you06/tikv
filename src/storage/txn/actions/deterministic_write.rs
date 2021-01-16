@@ -11,10 +11,11 @@ pub fn deterministic_write<S: Snapshot>(
     txn: &mut MvccTxn<S>,
     mutation: Mutation,
     commit_ts: TimeStamp,
+    skip_lock: bool,
 ) -> MvccResult<Option<ReleasedLock>> {
     // Currently no normal 2PC transaction is allowed to run with deterministic transaction.
 
-    match txn.reader.load_lock(mutation.key())? {
+    let has_lock = match txn.reader.load_lock(mutation.key())? {
         Some(lock) if lock.ts == txn.start_ts => {
             if lock.lock_type != LockType::Deterministic {
                 return Err(ErrorInner::LockTypeNotMatch {
@@ -24,41 +25,52 @@ pub fn deterministic_write<S: Snapshot>(
                 }
                 .into());
             }
+            true
         }
-        _ => {
+        l => {
             // Copied from action/commit.rs
-            return match txn
+            match txn
                 .reader
                 .get_txn_commit_record(mutation.key(), txn.start_ts)?
                 .info()
             {
                 Some((_, WriteType::Rollback)) | None => {
-                    MVCC_CONFLICT_COUNTER.commit_lock_not_found.inc();
-                    // None: related Rollback has been collapsed.
-                    // Rollback: rollback by concurrent transaction.
-                    info!(
-                        "deterministic_write: lock not found";
-                        "key" => %mutation.key(),
-                        "start_ts" => txn.start_ts,
-                        "commit_ts" => commit_ts,
-                    );
-                    Err(ErrorInner::TxnLockNotFound {
-                        start_ts: txn.start_ts,
-                        commit_ts,
-                        key: mutation.key().to_raw()?,
+                    if skip_lock {
+                        if let Some(l) = l {
+                            return Err(ErrorInner::KeyIsLocked(
+                                l.into_lock_info(mutation.key().to_raw()?),
+                            )
+                            .into());
+                        }
+                    } else {
+                        MVCC_CONFLICT_COUNTER.commit_lock_not_found.inc();
+                        // None: related Rollback has been collapsed.
+                        // Rollback: rollback by concurrent transaction.
+                        info!(
+                            "deterministic_write: lock not found";
+                            "key" => %mutation.key(),
+                            "start_ts" => txn.start_ts,
+                            "commit_ts" => commit_ts,
+                        );
+                        return Err(ErrorInner::TxnLockNotFound {
+                            start_ts: txn.start_ts,
+                            commit_ts,
+                            key: mutation.key().to_raw()?,
+                        }
+                        .into());
                     }
-                    .into())
                 }
                 // Committed by concurrent transaction.
                 Some((_, WriteType::Put))
                 | Some((_, WriteType::Delete))
                 | Some((_, WriteType::Lock)) => {
                     MVCC_DUPLICATE_CMD_COUNTER_VEC.deterministic_write.inc();
-                    Ok(None)
+                    return Ok(None);
                 }
             };
+            false
         }
-    }
+    };
 
     // TODO: This is unnecessary after completely implementing the lock mechanism (with
     // coinflict check).
@@ -113,5 +125,9 @@ pub fn deterministic_write<S: Snapshot>(
     }
     txn.put_write(key.clone(), commit_ts, write.as_ref().to_bytes());
 
-    Ok(txn.unlock_key(key, true))
+    Ok(if has_lock {
+        txn.unlock_key(key, true)
+    } else {
+        None
+    })
 }

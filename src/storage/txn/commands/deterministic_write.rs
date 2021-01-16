@@ -23,6 +23,7 @@ command! {
             mutations: Vec<Mutation>,
             start_ts: TimeStamp,
             commit_ts: TimeStamp,
+            skip_lock: bool,
         }
 }
 
@@ -71,7 +72,12 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for DeterministicWrite {
 
         let mut released_locks = ReleasedLocks::new(self.start_ts, self.commit_ts);
         for m in self.mutations {
-            released_locks.push(deterministic_write(&mut txn, m, self.commit_ts)?);
+            released_locks.push(deterministic_write(
+                &mut txn,
+                m,
+                self.commit_ts,
+                self.skip_lock,
+            )?);
         }
         released_locks.wake_up(context.lock_mgr);
 
