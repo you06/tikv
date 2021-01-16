@@ -34,6 +34,14 @@ pub fn check_txn_status_lock_exists<S: Snapshot>(
         }
     }
 
+    if lock.lock_type == LockType::Deterministic {
+        warn!("trying to check_txn_status on a deterministic lock";
+            "start_ts" => txn.start_ts,
+            "primary_key" => ?primary_key,
+        );
+        return Ok((TxnStatus::uncommitted(lock, false), None));
+    }
+
     let is_pessimistic_txn = !lock.for_update_ts.is_zero();
     if lock.ts.physical() + lock.ttl < current_ts.physical() {
         // If the lock is expired, clean it up.
