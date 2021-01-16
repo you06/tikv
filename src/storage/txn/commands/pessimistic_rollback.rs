@@ -61,7 +61,8 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for PessimisticRollback {
                 .into()
             ));
             let released_lock: MvccResult<_> = if let Some(lock) = txn.reader.load_lock(&key)? {
-                if lock.lock_type == LockType::Pessimistic
+                if (lock.lock_type == LockType::Pessimistic
+                    || lock.lock_type == LockType::Deterministic)
                     && lock.ts == self.start_ts
                     && lock.for_update_ts <= self.for_update_ts
                 {
