@@ -418,10 +418,9 @@ pub mod ctor {
                 );
             }
             if !cf_opts.get_no_table_properties() {
-                rocks_cf_opts.add_table_properties_collector_factory(
-                    "tikv.mvcc-properties-collector",
-                    MvccPropertiesCollectorFactory::default(),
-                );
+                let f = MvccPropertiesCollectorFactory::default().garbage_threshold(1.0);
+                rocks_cf_opts
+                    .add_table_properties_collector_factory("tikv.mvcc-properties-collector", f);
             }
         }
 

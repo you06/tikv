@@ -708,6 +708,7 @@ impl WriteCfConfig {
         &self,
         cache: &Option<Cache>,
         region_info_accessor: Option<&RegionInfoAccessor>,
+        conti_compact_garbage_threshold: f64,
     ) -> ColumnFamilyOptions {
         let mut cf_opts = build_cf_opt!(self, CF_WRITE, cache, region_info_accessor);
         // Prefix extractor(trim the timestamp at tail) for write cf.
@@ -720,11 +721,19 @@ impl WriteCfConfig {
         // Create prefix bloom filter for memtable.
         cf_opts.set_memtable_prefix_bloom_size_ratio(0.1);
         // Collects user defined properties.
+<<<<<<< HEAD
         cf_opts.add_table_properties_collector_factory(
             "tikv.mvcc-properties-collector",
             MvccPropertiesCollectorFactory::default(),
         );
         let f = RangePropertiesCollectorFactory {
+=======
+        let f = Box::new(MvccPropertiesCollectorFactory {
+            garbage_threshold: conti_compact_garbage_threshold,
+        });
+        cf_opts.add_table_properties_collector_factory("tikv.mvcc-properties-collector", f);
+        let f = Box::new(RangePropertiesCollectorFactory {
+>>>>>>> e7d7914c6 (init)
             prop_size_index_distance: self.prop_size_index_distance,
             prop_keys_index_distance: self.prop_keys_index_distance,
         };
@@ -1114,6 +1123,8 @@ impl DbConfig {
         cache: &Option<Cache>,
         region_info_accessor: Option<&RegionInfoAccessor>,
         api_version: ApiVersion,
+        enable_ttl: bool,
+        conti_compact_garbage_threshold: f64,
     ) -> Vec<CFOptions<'_>> {
         vec![
             CFOptions::new(
@@ -1124,7 +1135,11 @@ impl DbConfig {
             CFOptions::new(CF_LOCK, self.lockcf.build_opt(cache)),
             CFOptions::new(
                 CF_WRITE,
-                self.writecf.build_opt(cache, region_info_accessor),
+                self.writecf.build_opt(
+                    cache,
+                    region_info_accessor,
+                    conti_compact_garbage_threshold,
+                ),
             ),
             // TODO: remove CF_RAFT.
             CFOptions::new(CF_RAFT, self.raftcf.build_opt(cache)),
