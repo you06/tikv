@@ -118,7 +118,7 @@ impl TestEngineBuilder {
                     cfg_rocksdb.defaultcf.build_opt(&cache, None, api_version),
                 ),
                 CF_LOCK => (CF_LOCK, cfg_rocksdb.lockcf.build_opt(&cache)),
-                CF_WRITE => (CF_WRITE, cfg_rocksdb.writecf.build_opt(&cache, None)),
+                CF_WRITE => (CF_WRITE, cfg_rocksdb.writecf.build_opt(&cache, None, 1.0)),
                 CF_RAFT => (CF_RAFT, cfg_rocksdb.raftcf.build_opt(&cache)),
                 _ => (*cf, RocksCfOptions::default()),
             })
