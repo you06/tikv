@@ -4510,6 +4510,7 @@ mod tests {
                 &cfg.storage.block_cache.build_shared_cache(),
                 None,
                 cfg.storage.api_version(),
+                1.0,
             ),
             true,
             None,

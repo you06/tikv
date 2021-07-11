@@ -31,6 +31,7 @@ struct FactoryInner {
     flow_listener: Option<engine_rocks::FlowListener>,
     sst_recovery_sender: Option<Scheduler<String>>,
     root_db: Mutex<Option<RocksEngine>>,
+    garbage_threshold: f64,
 }
 
 pub struct KvEngineFactoryBuilder {
@@ -51,6 +52,7 @@ impl KvEngineFactoryBuilder {
                 flow_listener: None,
                 sst_recovery_sender: None,
                 root_db: Mutex::default(),
+                garbage_threshold: config.rocksdb.writecf.conti_compact_garbage_threshold - 1.0,
             },
             compact_event_sender: None,
         }
@@ -81,6 +83,11 @@ impl KvEngineFactoryBuilder {
         sender: Arc<dyn CompactedEventSender + Send + Sync>,
     ) -> Self {
         self.compact_event_sender = Some(sender);
+        self
+    }
+
+    pub fn garbage_threshold(mut self, f: f64) -> Self {
+        self.inner.garbage_threshold = f;
         self
     }
 
