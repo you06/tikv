@@ -29,6 +29,7 @@ struct FactoryInner {
     api_version: ApiVersion,
     flow_listener: Option<engine_rocks::FlowListener>,
     sst_recovery_sender: Option<Scheduler<String>>,
+    garbage_threshold: f64,
 }
 
 pub struct KvEngineFactoryBuilder<ER: RaftEngine> {
@@ -48,6 +49,7 @@ impl<ER: RaftEngine> KvEngineFactoryBuilder<ER> {
                 api_version: config.storage.api_version(),
                 flow_listener: None,
                 sst_recovery_sender: None,
+                garbage_threshold: config.rocksdb.writecf.conti_compact_garbage_threshold - 1.0,
             },
             router: None,
         }
@@ -75,6 +77,11 @@ impl<ER: RaftEngine> KvEngineFactoryBuilder<ER> {
 
     pub fn compaction_filter_router(mut self, router: RaftRouter<RocksEngine, ER>) -> Self {
         self.router = Some(router);
+        self
+    }
+
+    pub fn garbage_threshold(mut self, f: f64) -> Self {
+        self.inner.garbage_threshold = f;
         self
     }
 

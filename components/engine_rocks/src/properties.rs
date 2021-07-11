@@ -737,9 +737,10 @@ mod tests {
         let db_opts = DBOptions::new();
         let mut cf_opts = ColumnFamilyOptions::new();
         cf_opts.set_level_zero_file_num_compaction_trigger(10);
+        let f = MvccPropertiesCollectorFactory::default().garbage_threshold(1.0);
         cf_opts.add_table_properties_collector_factory(
             "tikv.mvcc-properties-collector",
-            MvccPropertiesCollectorFactory::default(),
+            f,
         );
         let cfs_opts = LARGE_CFS
             .iter()
@@ -787,7 +788,7 @@ mod tests {
             ("ef", 6, WriteType::Put, DBEntryType::Delete),
             ("gh", 7, WriteType::Delete, DBEntryType::Put),
         ];
-        let mut collector = MvccPropertiesCollector::new();
+        let mut collector = MvccPropertiesCollector::new(1.0);
         for &(key, ts, write_type, entry_type) in &cases {
             let ts = ts.into();
             let k = Key::from_raw(key.as_bytes()).append_ts(ts);
@@ -819,7 +820,7 @@ mod tests {
             entries.push((k, w.as_ref().to_bytes()));
         }
 
-        let mut collector = MvccPropertiesCollector::new();
+        let mut collector = MvccPropertiesCollector::new(1.0);
         b.iter(|| {
             for &(ref k, ref v) in &entries {
                 collector.add(k, v, DBEntryType::Put, 0, 0);
