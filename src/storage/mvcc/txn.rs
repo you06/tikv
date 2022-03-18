@@ -279,7 +279,7 @@ pub(crate) mod tests {
         kv::{Engine, TestEngineBuilder},
         TxnStatus,
     };
-    use kvproto::kvrpcpb::{AssertionLevel, Context};
+    use kvproto::kvrpcpb::{AssertionLevel, Context, Intent};
     use txn_types::{TimeStamp, WriteType, SHORT_VALUE_MAX_LEN};
 
     fn test_mvcc_txn_read_imp(k1: &[u8], k2: &[u8], v: &[u8]) {
@@ -733,6 +733,7 @@ pub(crate) mod tests {
             need_old_value: false,
             is_retry_request: false,
             assertion_level: AssertionLevel::Off,
+            write_intent: Intent::NoneIntent,
         }
     }
 

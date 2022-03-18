@@ -142,6 +142,12 @@ impl From<PrewriteRequest> for TypedCommand<PrewriteResult> {
         } else {
             None
         };
+        let write_intent = req.get_write_intent();
+        match write_intent {
+            Intent::WriteIntent => info!("get write intent request"; "for_update_ts" => for_update_ts),
+            Intent::PrewriteIntent => info!("get prewrite intent request"; "for_update_ts" => for_update_ts),
+            _ => {},
+        }
         if for_update_ts == 0 {
             Prewrite::new(
                 req.take_mutations().into_iter().map(Into::into).collect(),
@@ -155,6 +161,7 @@ impl From<PrewriteRequest> for TypedCommand<PrewriteResult> {
                 secondary_keys,
                 req.get_try_one_pc(),
                 req.get_assertion_level(),
+                req.get_write_intent(),
                 req.take_context(),
             )
         } else {
@@ -177,6 +184,7 @@ impl From<PrewriteRequest> for TypedCommand<PrewriteResult> {
                 secondary_keys,
                 req.get_try_one_pc(),
                 req.get_assertion_level(),
+                req.get_write_intent(),
                 req.take_context(),
             )
         }

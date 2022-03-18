@@ -19,7 +19,7 @@ use txn_types::{
     is_short_value, Key, Mutation, MutationType, OldValue, TimeStamp, Value, Write, WriteType,
 };
 
-use kvproto::kvrpcpb::{Assertion, AssertionLevel};
+use kvproto::kvrpcpb::{Assertion, AssertionLevel, Intent};
 
 /// Prewrite a single mutation by creating and storing a lock and value.
 pub fn prewrite<S: Snapshot>(
@@ -142,6 +142,18 @@ pub fn prewrite<S: Snapshot>(
         OldValue::Unspecified
     };
 
+    if txn_props.write_intent == Intent::WriteIntent {
+        mutation.has_intent = match txn_props.kind {
+            TransactionKind::Optimistic(_) => false,
+            TransactionKind::Pessimistic(_) => {
+                match  reader.get(&mutation.key, txn_props.start_ts)? {
+                    Some(_) => true,
+                    None => false,
+                }
+            },
+        };
+    }
+
     let final_min_commit_ts = mutation.write_lock(lock_status, txn)?;
 
     fail_point!("after_prewrite_one_key");
@@ -161,6 +173,7 @@ pub struct TransactionProperties<'a> {
     pub need_old_value: bool,
     pub is_retry_request: bool,
     pub assertion_level: AssertionLevel,
+    pub write_intent: Intent,
 }
 
 impl<'a> TransactionProperties<'a> {
@@ -233,6 +246,7 @@ struct PrewriteMutation<'a> {
     should_not_write: bool,
     assertion: Assertion,
     txn_props: &'a TransactionProperties<'a>,
+    has_intent: bool,
 }
 
 impl<'a> PrewriteMutation<'a> {
@@ -270,6 +284,7 @@ impl<'a> PrewriteMutation<'a> {
             should_not_write,
             assertion,
             txn_props,
+            has_intent: false,
         })
     }
 
@@ -383,13 +398,17 @@ impl<'a> PrewriteMutation<'a> {
             self.min_commit_ts,
         );
 
-        if let Some(value) = self.value {
-            if is_short_value(&value) {
-                // If the value is short, embed it in Lock.
-                lock.short_value = Some(value);
-            } else {
-                // value is long
-                txn.put_value(self.key.clone(), self.txn_props.start_ts, value);
+        let mut has_short = false;
+        if self.txn_props.write_intent != Intent::PrewriteIntent {
+            if let Some(value) = self.value {
+                if is_short_value(&value) {
+                    has_short = true;
+                    // If the value is short, embed it in Lock.
+                    lock.short_value = Some(value);
+                } else {
+                    // value is long
+                    txn.put_value(self.key.clone(), self.txn_props.start_ts, value);
+                }
             }
         }
 
@@ -418,10 +437,12 @@ impl<'a> PrewriteMutation<'a> {
             Ok(TimeStamp::zero())
         };
 
-        if try_one_pc {
-            txn.put_locks_for_1pc(self.key, lock, lock_status.has_pessimistic_lock());
-        } else {
-            txn.put_lock(self.key, &lock);
+        if has_short || self.txn_props.write_intent != Intent::WriteIntent {
+            if try_one_pc {
+                txn.put_locks_for_1pc(self.key, lock, lock_status.has_pessimistic_lock());
+            } else if !self.has_intent {
+                txn.put_lock(self.key, &lock);
+            }
         }
 
         final_min_commit_ts
@@ -687,6 +708,7 @@ pub mod tests {
             need_old_value: false,
             is_retry_request: false,
             assertion_level: AssertionLevel::Off,
+            write_intent: Intent::NoneIntent,
         }
     }
 
@@ -713,6 +735,7 @@ pub mod tests {
             need_old_value: true,
             is_retry_request: false,
             assertion_level: AssertionLevel::Off,
+            write_intent: Intent::NoneIntent,
         }
     }
 
@@ -1023,6 +1046,7 @@ pub mod tests {
                 need_old_value: true,
                 is_retry_request: false,
                 assertion_level: AssertionLevel::Off,
+                write_intent: Intent::NoneIntent,
             },
             Mutation::make_check_not_exists(Key::from_raw(key)),
             &None,
@@ -1055,6 +1079,7 @@ pub mod tests {
             need_old_value: true,
             is_retry_request: false,
             assertion_level: AssertionLevel::Off,
+            write_intent: Intent::NoneIntent,
         };
         // calculated commit_ts = 43 ≤ 50, ok
         let (_, old_value) = prewrite(
@@ -1105,6 +1130,7 @@ pub mod tests {
             need_old_value: true,
             is_retry_request: false,
             assertion_level: AssertionLevel::Off,
+            write_intent: Intent::NoneIntent,
         };
         // calculated commit_ts = 43 ≤ 50, ok
         let (_, old_value) = prewrite(
@@ -1214,6 +1240,7 @@ pub mod tests {
             need_old_value: true,
             is_retry_request: false,
             assertion_level: AssertionLevel::Off,
+            write_intent: Intent::NoneIntent,
         };
 
         let cases = vec![
@@ -1274,6 +1301,7 @@ pub mod tests {
             need_old_value: true,
             is_retry_request: false,
             assertion_level: AssertionLevel::Off,
+            write_intent: Intent::NoneIntent,
         };
 
         let cases: Vec<_> = vec![
@@ -1452,6 +1480,7 @@ pub mod tests {
                 need_old_value: true,
                 is_retry_request: false,
                 assertion_level: AssertionLevel::Off,
+                write_intent: Intent::NoneIntent,
             };
             let snapshot = engine.snapshot(Default::default()).unwrap();
             let cm = ConcurrencyManager::new(start_ts);
@@ -1506,6 +1535,7 @@ pub mod tests {
             need_old_value: true,
             is_retry_request: false,
             assertion_level: AssertionLevel::Off,
+            write_intent: Intent::NoneIntent,
         };
         let snapshot = engine.snapshot(Default::default()).unwrap();
         let cm = ConcurrencyManager::new(start_ts);
@@ -1647,6 +1677,7 @@ pub mod tests {
                     need_old_value: true,
                     is_retry_request: false,
                     assertion_level: AssertionLevel::Off,
+                    write_intent: Intent::NoneIntent,
                 };
                 let (_, old_value) = prewrite(
                     &mut txn,
@@ -1683,6 +1714,7 @@ pub mod tests {
                     need_old_value: true,
                     is_retry_request: false,
                     assertion_level: AssertionLevel::Off,
+                    write_intent: Intent::NoneIntent,
                 };
                 let (_, old_value) = prewrite(
                     &mut txn,

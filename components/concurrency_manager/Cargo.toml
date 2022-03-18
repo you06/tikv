@@ -10,13 +10,13 @@ tokio = { version = "1.5", features = ["macros", "sync", "time"] }
 txn_types = { path = "../txn_types", default-features = false }
 tikv_util = { path = "../tikv_util", default-features = false }
 fail = "0.5"
-kvproto = { git = "https://github.com/pingcap/kvproto.git" }
+kvproto = { git = "https://github.com/you06/kvproto.git", branch = "hack-write-intent" }
 
 # FIXME: switch to the crates.io version after crossbeam-skiplist is released
 [dependencies.crossbeam-skiplist]
 git = "https://github.com/tikv/crossbeam.git"
 branch = "tikv-5.0"
-package = "crossbeam-skiplist" 
+package = "crossbeam-skiplist"
 
 [dev-dependencies]
 rand = "0.8.3"

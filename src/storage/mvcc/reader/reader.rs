@@ -310,7 +310,8 @@ impl<S: EngineSnapshot> MvccReader<S> {
         ts: TimeStamp,
         gc_fence_limit: Option<TimeStamp>,
     ) -> Result<Option<Value>> {
-        Ok(match self.get_write(key, ts, gc_fence_limit)? {
+        let t = self.get_write(key, ts, gc_fence_limit)?;
+        Ok(match t {
             Some(write) => Some(self.load_data(key, write)?),
             None => None,
         })
@@ -628,7 +629,7 @@ pub mod tests {
     use engine_rocks::{Compat, RocksSnapshot};
     use engine_traits::{IterOptions, Mutable, WriteBatch, WriteBatchExt};
     use engine_traits::{ALL_CFS, CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE};
-    use kvproto::kvrpcpb::{AssertionLevel, Context};
+    use kvproto::kvrpcpb::{AssertionLevel, Context, Intent};
     use kvproto::metapb::{Peer, Region};
     use raftstore::store::RegionSnapshot;
     use std::ops::Bound;
@@ -712,6 +713,7 @@ pub mod tests {
                 need_old_value: false,
                 is_retry_request: false,
                 assertion_level: AssertionLevel::Off,
+                write_intent: Intent::NoneIntent,
             }
         }
 

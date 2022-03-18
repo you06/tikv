@@ -25,7 +25,7 @@ use crate::storage::{
     Context, Error as StorageError, ProcessResult, Snapshot,
 };
 use engine_traits::CF_WRITE;
-use kvproto::kvrpcpb::{AssertionLevel, ExtraOp};
+use kvproto::kvrpcpb::{AssertionLevel, ExtraOp, Intent};
 use std::mem;
 use tikv_kv::SnapshotExt;
 use txn_types::{Key, Mutation, OldValue, OldValues, TimeStamp, TxnExtra, Write, WriteType};
@@ -67,6 +67,8 @@ command! {
             /// Assertions is a mechanism to check the constraint on the previous version of data
             /// that must be satisfied as long as data is consistent.
             assertion_level: AssertionLevel,
+            /// Write intent, a special type of prewrite.
+            write_intent: Intent,
         }
 }
 
@@ -89,6 +91,7 @@ impl Prewrite {
             None,
             false,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         )
     }
@@ -112,6 +115,7 @@ impl Prewrite {
             None,
             true,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         )
     }
@@ -135,6 +139,7 @@ impl Prewrite {
             None,
             false,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         )
     }
@@ -157,6 +162,7 @@ impl Prewrite {
             None,
             false,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             ctx,
         )
     }
@@ -178,6 +184,7 @@ impl Prewrite {
             secondary_keys: self.secondary_keys,
 
             assertion_level: self.assertion_level,
+            write_intent: self.write_intent,
 
             ctx: self.ctx,
             old_values: OldValues::default(),
@@ -250,6 +257,8 @@ command! {
             /// Assertions is a mechanism to check the constraint on the previous version of data
             /// that must be satisfied as long as data is consistent.
             assertion_level: AssertionLevel,
+            /// Write intent, a special type of prewrite.
+            write_intent: Intent,
         }
 }
 
@@ -273,6 +282,7 @@ impl PrewritePessimistic {
             None,
             false,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         )
     }
@@ -297,6 +307,7 @@ impl PrewritePessimistic {
             None,
             true,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         )
     }
@@ -318,6 +329,7 @@ impl PrewritePessimistic {
             max_commit_ts: self.max_commit_ts,
 
             assertion_level: self.assertion_level,
+            write_intent: self.write_intent,
 
             ctx: self.ctx,
             old_values: OldValues::default(),
@@ -371,6 +383,7 @@ struct Prewriter<K: PrewriteKind> {
     old_values: OldValues,
     try_one_pc: bool,
     assertion_level: AssertionLevel,
+    write_intent: Intent,
 
     ctx: Context,
 }
@@ -432,6 +445,9 @@ impl<K: PrewriteKind> Prewriter<K> {
         reader: &mut SnapshotReader<impl Snapshot>,
         extra_op: ExtraOp,
     ) -> Result<(Vec<std::result::Result<(), StorageError>>, TimeStamp)> {
+        if self.write_intent == Intent::WriteIntent {
+            info!("receive write-intent req");
+        }
         let commit_kind = match (&self.secondary_keys, self.try_one_pc) {
             (_, true) => CommitKind::OnePc(self.max_commit_ts),
             (&Some(_), false) => CommitKind::Async(self.max_commit_ts),
@@ -449,6 +465,7 @@ impl<K: PrewriteKind> Prewriter<K> {
             need_old_value: extra_op == ExtraOp::ReadOldValue,
             is_retry_request: self.ctx.is_retry_request,
             assertion_level: self.assertion_level,
+            write_intent: self.write_intent,
         };
 
         let async_commit_pk = self
@@ -817,7 +834,7 @@ mod tests {
     };
     use concurrency_manager::ConcurrencyManager;
     use engine_traits::CF_WRITE;
-    use kvproto::kvrpcpb::{Assertion, Context, ExtraOp};
+    use kvproto::kvrpcpb::{Assertion, Context, ExtraOp, Intent};
     use txn_types::{Key, Mutation, TimeStamp};
 
     fn inner_test_prewrite_skip_constraint_check(pri_key_number: u8, write_num: usize) {
@@ -1231,6 +1248,7 @@ mod tests {
             Some(vec![]),
             false,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         );
 
@@ -1264,6 +1282,7 @@ mod tests {
                 Some(vec![k2.to_vec()]),
                 false,
                 AssertionLevel::Off,
+                Intent::NoneIntent,
                 Context::default(),
             );
 
@@ -1299,6 +1318,7 @@ mod tests {
             Some(vec![]),
             false,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         );
 
@@ -1333,6 +1353,7 @@ mod tests {
             Some(vec![k2.to_vec()]),
             false,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         );
 
@@ -1534,6 +1555,7 @@ mod tests {
                     secondary_keys,
                     case.one_pc,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 )
             } else {
@@ -1549,6 +1571,7 @@ mod tests {
                     secondary_keys,
                     case.one_pc,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 )
             };
@@ -1662,6 +1685,7 @@ mod tests {
             Some(vec![]),
             false,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         );
         let context = WriteContext {
@@ -1764,6 +1788,7 @@ mod tests {
             Some(vec![]),
             false,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         );
         let context = WriteContext {
@@ -1894,6 +1919,7 @@ mod tests {
                     secondary_keys,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     ctx,
                 );
                 prewrite_command(&engine, cm.clone(), &mut statistics, cmd)
@@ -1995,6 +2021,7 @@ mod tests {
             Some(vec![]),
             false,
             AssertionLevel::Off,
+            Intent::NoneIntent,
             Context::default(),
         );
         let context = WriteContext {
@@ -2184,5 +2211,71 @@ mod tests {
             err,
             MvccError(box MvccErrorInner::AssertionFailed { .. })
         ));
+    }
+
+    #[test]
+    fn test_prewrite_intent_pessimsitic() {
+        let engine = TestEngineBuilder::new().build().unwrap();
+        let cm = concurrency_manager::ConcurrencyManager::new(1.into());
+
+        let key = b"k";
+        let mut value = vec![];
+        for _ in 0..256 {
+            value.push(b'v');
+        }
+        assert!(!txn_types::is_short_value(&value));
+        must_acquire_pessimistic_lock(&engine, key, key, 10, 15);
+
+        let write_intent_mutations = vec![(Mutation::make_put(Key::from_raw(key), value.to_vec()), true)];
+        let prewrite_mutations = vec![(Mutation::make_put(Key::from_raw(key), b"".to_vec()), true)];
+        let mut statistics = Statistics::default();
+        // write intent
+        let cmd = super::PrewritePessimistic::new(
+            write_intent_mutations,
+            key.to_vec(),
+            10.into(),
+            0,
+            15.into(),
+            1,
+            TimeStamp::default(),
+            TimeStamp::default(),
+            Some(vec![]),
+            false,
+            AssertionLevel::Off,
+            Intent::WriteIntent,
+            Context::default(),
+        );
+
+        let res = prewrite_command(&engine, cm.clone(), &mut statistics, cmd).unwrap();
+        assert!(!res.min_commit_ts.is_zero());
+        assert_eq!(res.one_pc_commit_ts, TimeStamp::zero());
+        must_pessimistic_locked(&engine, key, 10, 15);
+
+        must_get_none(&engine, key, 20); // write intent not block read.
+
+        // real prewrite
+        let cmd = super::PrewritePessimistic::new(
+            prewrite_mutations,
+            key.to_vec(),
+            10.into(),
+            0,
+            15.into(),
+            1,
+            TimeStamp::default(),
+            TimeStamp::default(),
+            Some(vec![]),
+            false,
+            AssertionLevel::Off,
+            Intent::PrewriteIntent,
+            Context::default(),
+        );
+        let res = prewrite_command(&engine, cm.clone(), &mut statistics, cmd).unwrap();
+        assert!(!res.min_commit_ts.is_zero());
+        assert_eq!(res.one_pc_commit_ts, TimeStamp::zero());
+        must_locked(&engine, key, 10);
+
+        must_get_err(&engine, key, 21); // get error after prewrite.
+        must_commit(&engine, key, 10, 16);
+        must_get(&engine, key, 20, &value);
     }
 }

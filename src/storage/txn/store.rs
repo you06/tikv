@@ -647,7 +647,7 @@ mod tests {
     use concurrency_manager::ConcurrencyManager;
     use engine_traits::CfName;
     use engine_traits::{IterOptions, ReadOptions};
-    use kvproto::kvrpcpb::{AssertionLevel, Context};
+    use kvproto::kvrpcpb::{AssertionLevel, Context, Intent};
     use std::sync::Arc;
     use tikv_kv::DummySnapshotExt;
 
@@ -707,6 +707,7 @@ mod tests {
                             need_old_value: false,
                             is_retry_request: false,
                             assertion_level: AssertionLevel::Off,
+                            write_intent: Intent::NoneIntent,
                         },
                         Mutation::make_put(Key::from_raw(key), key.to_vec()),
                         &None,

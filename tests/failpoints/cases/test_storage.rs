@@ -8,7 +8,7 @@ use std::time::Duration;
 use grpcio::*;
 use kvproto::kvrpcpb::{
     self, ApiVersion, AssertionLevel, BatchRollbackRequest, CommandPri, CommitRequest, Context,
-    GetRequest, Op, PrewriteRequest, RawPutRequest,
+    GetRequest, Op, PrewriteRequest, RawPutRequest, Intent,
 };
 use kvproto::tikvpb::TikvClient;
 
@@ -70,6 +70,7 @@ fn test_scheduler_leader_change_twice() {
                 None,
                 false,
                 AssertionLevel::Off,
+                Intent::NoneIntent,
                 ctx0,
             ),
             Box::new(move |res: storage::Result<_>| {
@@ -295,6 +296,7 @@ fn test_scale_scheduler_pool() {
                     None,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     ctx.clone(),
                 ),
                 Box::new(move |res: storage::Result<_>| {
@@ -406,6 +408,7 @@ fn test_pipelined_pessimistic_lock() {
                 None,
                 false,
                 AssertionLevel::Off,
+                Intent::NoneIntent,
                 Context::default(),
             ),
             expect_ok_callback(tx.clone(), 0),
@@ -547,6 +550,7 @@ fn test_async_commit_prewrite_with_stale_max_ts() {
                     Some(vec![b"k2".to_vec()]),
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     ctx.clone(),
                 ),
                 Box::new(move |res: storage::Result<_>| {
@@ -582,6 +586,7 @@ fn test_async_commit_prewrite_with_stale_max_ts() {
                     Some(vec![b"k2".to_vec()]),
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     ctx.clone(),
                 ),
                 Box::new(move |res: storage::Result<_>| {
@@ -693,6 +698,7 @@ fn test_async_apply_prewrite_impl<E: Engine>(
                     secondaries,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     ctx.clone(),
                 ),
                 Box::new(move |r| tx.send(r).unwrap()),
@@ -716,6 +722,7 @@ fn test_async_apply_prewrite_impl<E: Engine>(
                     secondaries,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     ctx.clone(),
                 ),
                 Box::new(move |r| tx.send(r).unwrap()),
@@ -948,6 +955,7 @@ fn test_async_apply_prewrite_fallback() {
                 Some(vec![]),
                 false,
                 AssertionLevel::Off,
+                Intent::NoneIntent,
                 ctx.clone(),
             ),
             Box::new(move |r| tx.send(r).unwrap()),
@@ -1034,6 +1042,7 @@ fn test_async_apply_prewrite_1pc_impl<E: Engine>(
                     None,
                     true,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     ctx.clone(),
                 ),
                 Box::new(move |r| tx.send(r).unwrap()),
@@ -1054,6 +1063,7 @@ fn test_async_apply_prewrite_1pc_impl<E: Engine>(
                     None,
                     true,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     ctx.clone(),
                 ),
                 Box::new(move |r| tx.send(r).unwrap()),
@@ -1327,6 +1337,7 @@ fn test_resolve_lock_deadline() {
         None,
         false,
         AssertionLevel::Off,
+        Intent::NoneIntent,
         ctx.clone(),
     );
     let (tx, rx) = channel();

@@ -8,7 +8,7 @@ use crate::storage::mvcc::tests::write;
 use crate::storage::mvcc::{Error, Key, Mutation, MvccTxn, SnapshotReader, TimeStamp};
 use crate::storage::{txn, Engine};
 use concurrency_manager::ConcurrencyManager;
-use kvproto::kvrpcpb::{Assertion, AssertionLevel, Context};
+use kvproto::kvrpcpb::{Assertion, AssertionLevel, Context, Intent};
 use prewrite::{prewrite, CommitKind, TransactionKind, TransactionProperties};
 
 pub fn must_prewrite_put_impl<E: Engine>(
@@ -59,6 +59,7 @@ pub fn must_prewrite_put_impl<E: Engine>(
             need_old_value: false,
             is_retry_request,
             assertion_level,
+            write_intent: Intent::NoneIntent,
         },
         mutation,
         secondary_keys,
@@ -265,6 +266,7 @@ fn default_txn_props(
         need_old_value: false,
         is_retry_request: false,
         assertion_level: AssertionLevel::Off,
+        write_intent: Intent::NoneIntent,
     }
 }
 pub fn must_prewrite_put_err_impl<E: Engine>(

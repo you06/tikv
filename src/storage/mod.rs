@@ -3083,7 +3083,7 @@ mod tests {
     use error_code::ErrorCodeExt;
     use errors::extract_key_error;
     use futures::executor::block_on;
-    use kvproto::kvrpcpb::{AssertionLevel, CommandPri, Op};
+    use kvproto::kvrpcpb::{AssertionLevel, CommandPri, Op, Intent};
     use std::{
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -5625,6 +5625,7 @@ mod tests {
                     None,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 ),
                 expect_ok_callback(tx, 0),
@@ -6278,6 +6279,7 @@ mod tests {
                     Some(vec![b"k1".to_vec(), b"k2".to_vec()]),
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 ),
                 expect_ok_callback(tx.clone(), 0),
@@ -6421,6 +6423,7 @@ mod tests {
                     None,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 ),
                 expect_ok_callback(tx.clone(), 0),
@@ -6496,6 +6499,7 @@ mod tests {
                     None,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 ),
                 expect_ok_callback(tx.clone(), 0),
@@ -6630,6 +6634,7 @@ mod tests {
                     None,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 ),
                 expect_ok_callback(tx.clone(), 0),
@@ -7439,6 +7444,7 @@ mod tests {
                     Some(vec![b"a".to_vec(), b"b".to_vec()]),
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 ),
                 Box::new(move |res| {
@@ -7485,6 +7491,7 @@ mod tests {
                     Some(vec![b"e".to_vec()]),
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 ),
                 Box::new(move |res| {
@@ -7579,6 +7586,7 @@ mod tests {
                     None,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Default::default(),
                 ),
                 expect_ok_callback(tx.clone(), 0),
@@ -7626,6 +7634,7 @@ mod tests {
                     Some(vec![k2.to_vec()]),
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Default::default(),
                 ),
                 expect_ok_callback(tx.clone(), 0),
@@ -7730,6 +7739,7 @@ mod tests {
                 None,
                 false,
                 AssertionLevel::Off,
+                Intent::NoneIntent,
                 Context::default(),
             ),
             pipelined_pessimistic_lock: false,
@@ -7754,6 +7764,7 @@ mod tests {
                 Some(vec![]),
                 false,
                 AssertionLevel::Off,
+                Intent::NoneIntent,
                 Context::default(),
             ),
             pipelined_pessimistic_lock: false,
@@ -8446,6 +8457,7 @@ mod tests {
                     None,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 ),
                 Box::new(move |res| {
@@ -8503,6 +8515,7 @@ mod tests {
                     None,
                     false,
                     AssertionLevel::Off,
+                    Intent::NoneIntent,
                     Context::default(),
                 ),
                 Box::new(move |res| {
