@@ -499,6 +499,10 @@ impl WaiterManager {
         let (waiter_ts, lock) = (waiter.start_ts, waiter.lock);
         let wait_table = self.wait_table.clone();
         let detector_scheduler = self.detector_scheduler.clone();
+        let deadline_duration = waiter.delay.deadline - Instant::now();
+        let id = handle.id();
+        println!("{:?} - handle_wait_for, now: {}, deadline: {}", id, waiter.start_ts, deadline_duration.as_millis());
+        let start = Instant::now();
         // Remove the waiter from wait table when it times out.
         let f = waiter.on_timeout(move || {
             if let Some(waiter) = wait_table.borrow_mut().remove_waiter(lock, waiter_ts) {

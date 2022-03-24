@@ -146,7 +146,7 @@ pub fn prewrite<S: Snapshot>(
         mutation.has_intent = match txn_props.kind {
             TransactionKind::Optimistic(_) => false,
             TransactionKind::Pessimistic(_) => {
-                match  reader.get(&mutation.key, txn_props.start_ts)? {
+                match reader.get(&mutation.key, txn_props.start_ts)? {
                     Some(_) => true,
                     None => false,
                 }
@@ -402,6 +402,10 @@ impl<'a> PrewriteMutation<'a> {
         if self.txn_props.write_intent != Intent::PrewriteIntent {
             if let Some(value) = self.value {
                 if is_short_value(&value) {
+                    if self.txn_props.write_intent == Intent::WriteIntent {
+                        // short value is not allowed.
+                        return Err(ErrorInner::BadFormat(txn_types::Error(Box::new(txn_types::ErrorInner::BadFormatWrite))).into());
+                    }
                     has_short = true;
                     // If the value is short, embed it in Lock.
                     lock.short_value = Some(value);

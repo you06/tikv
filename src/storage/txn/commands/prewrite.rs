@@ -2214,7 +2214,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prewrite_intent_pessimsitic() {
+    fn test_prewrite_intent_pessimsitic_long() {
         let engine = TestEngineBuilder::new().build().unwrap();
         let cm = concurrency_manager::ConcurrencyManager::new(1.into());
 
