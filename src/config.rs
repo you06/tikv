@@ -3075,6 +3075,11 @@ impl TiKvConfig {
             }
         }
 
+        println!("=========== LAST CFG ===========");
+        println!("{:?}", last_cfg);
+        println!("=========== CURR CFG ===========");
+        println!("{:?}", self);
+
         if last_cfg.raft_store.raftdb_path != self.raft_store.raftdb_path
             && !last_cfg.raft_engine.enable
         {
@@ -3182,7 +3187,8 @@ pub fn check_critical_config(config: &TiKvConfig) -> Result<(), String> {
     // changes, user must guarantee relevant works have been done.
     if let Some(mut cfg) = get_last_config(&config.storage.data_dir) {
         cfg.compatible_adjust();
-        let _ = cfg.validate();
+        let res = cfg.validate();
+        println!("check critical result :{:?}", res);
         config.check_critical_cfg_with(&cfg)?;
     }
     Ok(())
