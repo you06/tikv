@@ -408,10 +408,18 @@ impl<'a> PrewriteMutation<'a> {
                     }
                     has_short = true;
                     // If the value is short, embed it in Lock.
+
                     lock.short_value = Some(value);
                 } else {
                     // value is long
                     txn.put_value(self.key.clone(), self.txn_props.start_ts, value);
+                }
+            }
+        } else {
+            if let Some(value) = self.value {
+                if value.len() != 0 {
+                    assert!(is_short_value(&value));
+                    lock.short_value = Some(value);
                 }
             }
         }

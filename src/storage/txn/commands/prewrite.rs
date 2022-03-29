@@ -2274,7 +2274,7 @@ mod tests {
         assert_eq!(res.one_pc_commit_ts, TimeStamp::zero());
         must_locked(&engine, key, 10);
 
-        must_get_err(&engine, key, 21); // get error after prewrite.
+        must_get_err(&engine, key, 21); // get error after prewrite-intent.
         must_commit(&engine, key, 10, 16);
         must_get(&engine, key, 20, &value);
     }

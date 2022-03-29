@@ -210,6 +210,10 @@ impl<S: Snapshot> PointGetter<S> {
             }
         }
 
+        // let value = self.load_data(user_key);
+
+        // info!("point getter result"; "key" => format!("{:?}", user_key), "value" => format!("{:?}", value));
+
         self.load_data(user_key)
     }
 
@@ -330,6 +334,7 @@ impl<S: Snapshot> PointGetter<S> {
                     }
                     match write.short_value {
                         Some(value) => {
+                            // info!("point getter result-short"; "key" => format!("{:?}", user_key), "value" => format!("{:?}", value));
                             // Value is carried in `write`.
                             self.statistics.processed_size += user_key.len() + value.len();
                             return Ok(Some(value.to_vec()));
@@ -338,6 +343,7 @@ impl<S: Snapshot> PointGetter<S> {
                             let start_ts = write.start_ts;
                             let value = self.load_data_from_default_cf(start_ts, user_key)?;
                             self.statistics.processed_size += user_key.len() + value.len();
+                            // info!("point getter result-long"; "key" => format!("{:?}", user_key), "value" => format!("{:?}", value));
                             return Ok(Some(value));
                         }
                     }

@@ -128,8 +128,13 @@ impl TaskContext {
     fn new(task: Task, cb: StorageCallback) -> TaskContext {
         let tag = task.cmd.tag();
         let lock = task.cmd.gen_lock();
+        let is_write_intent = if let Command::PrewritePessimistic(ref c) = task.cmd {
+            c.write_intent == kvproto::kvrpcpb::Intent::WriteIntent
+        } else {
+            false
+        };
         // Write command should acquire write lock.
-        if !task.cmd.readonly() && !lock.is_write_lock() {
+        if !task.cmd.readonly() && !lock.is_write_lock() && !is_write_intent {
             panic!("write lock is expected for command {}", task.cmd);
         }
         let write_bytes = if lock.is_write_lock() {
