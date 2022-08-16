@@ -177,6 +177,7 @@ where
 fn need_compact(
     num_entires: u64,
     num_versions: u64,
+    num_deletes: u64,
     tombstones_num_threshold: u64,
     tombstones_percent_threshold: u64,
 ) -> bool {
@@ -184,11 +185,15 @@ fn need_compact(
         return false;
     }
 
+    if num_deletes * 10 >= num_entires {
+        return true;
+    }
+
     // When the number of tombstones exceed threshold and ratio, this range need
     // compacting.
-    let estimate_num_del = num_entires - num_versions;
-    estimate_num_del >= tombstones_num_threshold
-        && estimate_num_del * 100 >= tombstones_percent_threshold * num_entires
+    let estimate_num_tombstones = num_entires - num_versions;
+    estimate_num_tombstones >= tombstones_num_threshold
+        && estimate_num_tombstones * 100 >= tombstones_percent_threshold * num_entires
 }
 
 fn collect_ranges_need_compact(
@@ -206,12 +211,13 @@ fn collect_ranges_need_compact(
     for range in ranges.windows(2) {
         // Get total entries and total versions in this range and checks if it needs to
         // be compacted.
-        if let Some((num_ent, num_ver)) =
+        if let Some((num_ent, num_ver, num_del)) =
             box_try!(engine.get_range_entries_and_versions(CF_WRITE, &range[0], &range[1]))
         {
             if need_compact(
                 num_ent,
                 num_ver,
+                num_del,
                 tombstones_num_threshold,
                 tombstones_percent_threshold,
             ) {

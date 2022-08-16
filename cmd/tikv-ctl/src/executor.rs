@@ -72,7 +72,7 @@ pub fn new_debug_executor(
     kv_db_opts.set_paranoid_checks(!skip_paranoid_checks);
     let kv_cfs_opts = cfg
         .rocksdb
-        .build_cf_opts(&cache, None, cfg.storage.api_version());
+        .build_cf_opts(&cache, None, cfg.storage.api_version(), cfg.gc.ratio_threshold - 1.0);
     let kv_path = PathBuf::from(kv_path).canonicalize().unwrap();
     let kv_path = kv_path.to_str().unwrap();
     let mut kv_db = match new_engine_opt(kv_path, kv_db_opts, kv_cfs_opts) {

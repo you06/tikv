@@ -52,7 +52,7 @@ impl KvEngineFactoryBuilder {
                 flow_listener: None,
                 sst_recovery_sender: None,
                 root_db: Mutex::default(),
-                garbage_threshold: config.rocksdb.writecf.conti_compact_garbage_threshold - 1.0,
+                garbage_threshold: config.gc.ratio_threshold - 1.0,
             },
             compact_event_sender: None,
         }
@@ -159,6 +159,7 @@ impl KvEngineFactory {
             &self.inner.block_cache,
             self.inner.region_info_accessor.as_ref(),
             self.inner.api_version,
+            self.inner.garbage_threshold,
         );
         let kv_engine = engine_rocks::util::new_engine_opt(
             tablet_path.to_str().unwrap(),
@@ -196,6 +197,7 @@ impl KvEngineFactory {
             &self.inner.block_cache,
             self.inner.region_info_accessor.as_ref(),
             self.inner.api_version,
+            self.inner.garbage_threshold,
         );
         // TODOTODO: call rust-rocks or tirocks to destroy_engine;
         // engine_rocks::util::destroy_engine(
