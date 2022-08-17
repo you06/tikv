@@ -214,12 +214,13 @@ fn collect_ranges_need_compact(
     for range in ranges.windows(2) {
         // Get total entries and total versions in this range and checks if it needs to
         // be compacted.
-        if let Some((num_ent, num_ver)) =
+        if let Some((num_ent, num_ver, num_del)) =
             box_try!(engine.get_range_entries_and_versions(CF_WRITE, &range[0], &range[1]))
         {
             let nc = need_compact(
                 num_ent,
                 num_ver,
+                num_del,
                 tombstones_num_threshold,
                 tombstones_percent_threshold,
             );
@@ -371,7 +372,7 @@ mod tests {
         engine.flush_cf(CF_WRITE, true).unwrap();
 
         let (start, end) = (data_key(b"k0"), data_key(b"k5"));
-        let (entries, version) = engine
+        let (entries, version, _) = engine
             .get_range_entries_and_versions(CF_WRITE, &start, &end)
             .unwrap()
             .unwrap();
@@ -386,7 +387,7 @@ mod tests {
         engine.flush_cf(CF_WRITE, true).unwrap();
 
         let (s, e) = (data_key(b"k5"), data_key(b"k9"));
-        let (entries, version) = engine
+        let (entries, version, _) = engine
             .get_range_entries_and_versions(CF_WRITE, &s, &e)
             .unwrap()
             .unwrap();
@@ -413,7 +414,7 @@ mod tests {
         engine.flush_cf(CF_WRITE, true).unwrap();
 
         let (s, e) = (data_key(b"k5"), data_key(b"k9"));
-        let (entries, version) = engine
+        let (entries, version, _) = engine
             .get_range_entries_and_versions(CF_WRITE, &s, &e)
             .unwrap()
             .unwrap();

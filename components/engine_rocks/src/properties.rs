@@ -508,7 +508,7 @@ pub fn get_range_entries_and_versions(
     cf: &str,
     start: &[u8],
     end: &[u8],
-) -> Option<(u64, u64)> {
+) -> Option<(u64, u64, u64)> {
     let range = Range::new(start, end);
     let collection = match engine.get_properties_of_tables_in_range(cf, &[range]) {
         Ok(v) => v,
@@ -538,7 +538,7 @@ pub fn get_range_entries_and_versions(
         props.add(&mvcc);
     }
 
-    Some((num_entries, props.num_versions))
+    Some((num_entries, props.num_versions, props.num_deletes))
 }
 
 #[cfg(test)]
@@ -752,7 +752,7 @@ mod tests {
 
         let start_keys = keys::data_key(&[]);
         let end_keys = keys::data_end_key(&[]);
-        let (entries, versions) =
+        let (entries, versions, _) =
             get_range_entries_and_versions(&db, CF_WRITE, &start_keys, &end_keys).unwrap();
         assert_eq!(entries, (cases.len() * 2) as u64);
         assert_eq!(versions, cases.len() as u64);
