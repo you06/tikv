@@ -512,10 +512,14 @@ pub fn get_range_entries_and_versions(
     let range = Range::new(start, end);
     let collection = match engine.get_properties_of_tables_in_range(cf, &[range]) {
         Ok(v) => v,
-        Err(_) => return None,
+        Err(e) => {
+            info!("DBG get collection with error, p1: {:?}", e);
+            return None
+        },
     };
 
     if collection.is_empty() {
+        info!("DBG range is empty");
         return None;
     }
 
@@ -525,7 +529,10 @@ pub fn get_range_entries_and_versions(
     for (_, v) in collection.iter() {
         let mvcc = match RocksMvccProperties::decode(v.user_collected_properties()) {
             Ok(v) => v,
-            Err(_) => return None,
+            Err(e) => {
+                info!("DBG get collection with error, p2: {:?}", e);
+                return None
+            },
         };
         num_entries += v.num_entries();
         props.add(&mvcc);

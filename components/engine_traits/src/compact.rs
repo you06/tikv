@@ -21,6 +21,7 @@ pub trait CompactExt {
         end_key: Option<&[u8]>,
         exclusive_manual: bool,
         max_subcompactions: u32,
+        bottommost: bool,
     ) -> Result<()>;
 
     /// Compacts files in the range and above the output level.

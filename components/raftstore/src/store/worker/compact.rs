@@ -101,6 +101,7 @@ where
         cf_name: &str,
         start_key: Option<&[u8]>,
         end_key: Option<&[u8]>,
+        bottommost: bool,
     ) -> Result<(), Error> {
         let timer = Instant::now();
         let compact_range_timer = COMPACT_RANGE_CF
@@ -108,7 +109,7 @@ where
             .start_coarse_timer();
         box_try!(
             self.engine
-                .compact_range(cf_name, start_key, end_key, false, 1 /* threads */,)
+                .compact_range(cf_name, start_key, end_key, false, 1 /* threads */, bottommost)
         );
         compact_range_timer.observe_duration();
         info!(
@@ -136,7 +137,7 @@ where
                 end_key,
             } => {
                 let cf = &cf_name;
-                if let Err(e) = self.compact_range_cf(cf, start_key.as_deref(), end_key.as_deref())
+                if let Err(e) = self.compact_range_cf(cf, start_key.as_deref(), end_key.as_deref(), false)
                 {
                     error!("execute compact range failed"; "cf" => cf, "err" => %e);
                 }
@@ -153,9 +154,9 @@ where
                 tombstones_percent_threshold,
             ) {
                 Ok(mut ranges) => {
-                    for (start, end) in ranges.drain(..) {
+                    for (start, end, bottommost) in ranges.drain(..) {
                         for cf in &cf_names {
-                            if let Err(e) = self.compact_range_cf(cf, Some(&start), Some(&end)) {
+                            if let Err(e) = self.compact_range_cf(cf, Some(&start), Some(&end), bottommost) {
                                 error!(
                                     "compact range failed";
                                     "range_start" => log_wrappers::Value::key(&start),
@@ -177,18 +178,23 @@ where
 fn need_compact(
     num_entires: u64,
     num_versions: u64,
+    num_deletes: u64,
     tombstones_num_threshold: u64,
     tombstones_percent_threshold: u64,
-) -> bool {
+) -> (bool, bool) {
+    if num_deletes * 10 >= num_entires {
+        return (true, true);
+    }
+
     if num_entires <= num_versions {
-        return false;
+        return (false, false);
     }
 
     // When the number of tombstones exceed threshold and ratio, this range need
     // compacting.
     let estimate_num_del = num_entires - num_versions;
-    estimate_num_del >= tombstones_num_threshold
-        && estimate_num_del * 100 >= tombstones_percent_threshold * num_entires
+    (estimate_num_del >= tombstones_num_threshold
+        && estimate_num_del * 100 >= tombstones_percent_threshold * num_entires, false)
 }
 
 fn collect_ranges_need_compact(
@@ -196,25 +202,30 @@ fn collect_ranges_need_compact(
     ranges: Vec<Key>,
     tombstones_num_threshold: u64,
     tombstones_percent_threshold: u64,
-) -> Result<VecDeque<(Key, Key)>, Error> {
+) -> Result<VecDeque<(Key, Key, bool)>, Error> {
     // Check the SST properties for each range, and TiKV will compact a range if the
     // range contains too many RocksDB tombstones. TiKV will merge multiple
     // neighboring ranges that need compacting into a single range.
     let mut ranges_need_compact = VecDeque::new();
     let mut compact_start = None;
     let mut compact_end = None;
+    let mut compact_bottommost = false;
+    info!("DBG compact range: {:?}", ranges);
     for range in ranges.windows(2) {
         // Get total entries and total versions in this range and checks if it needs to
         // be compacted.
         if let Some((num_ent, num_ver)) =
             box_try!(engine.get_range_entries_and_versions(CF_WRITE, &range[0], &range[1]))
         {
-            if need_compact(
+            let nc = need_compact(
                 num_ent,
                 num_ver,
                 tombstones_num_threshold,
                 tombstones_percent_threshold,
-            ) {
+            );
+            info!("DBG need compact, num_ent: {}, num_ver: {}, num_del: {}, start: {:?}, end: {:?}, nc: {:?}",
+                num_ent, num_ver, num_del, &range[0], &range[1], nc);
+            if nc.0 {
                 if compact_start.is_none() {
                     // The previous range doesn't need compacting.
                     compact_start = Some(range[0].clone());
@@ -223,6 +234,8 @@ fn collect_ranges_need_compact(
                 // Move to next range.
                 continue;
             }
+        } else {
+            info!("DBG get range none, start: {:?}, end: {:?}", &range[0], &range[1]);
         }
 
         // Current range doesn't need compacting, save previous range that need
@@ -231,10 +244,11 @@ fn collect_ranges_need_compact(
             assert!(compact_end.is_some());
         }
         if let (Some(cs), Some(ce)) = (compact_start, compact_end) {
-            ranges_need_compact.push_back((cs, ce));
+            ranges_need_compact.push_back((cs, ce, compact_bottommost));
         }
         compact_start = None;
         compact_end = None;
+        compact_bottommost = false;
     }
 
     // Save the last range that needs to be compacted.
@@ -242,7 +256,7 @@ fn collect_ranges_need_compact(
         assert!(compact_end.is_some());
     }
     if let (Some(cs), Some(ce)) = (compact_start, compact_end) {
-        ranges_need_compact.push_back((cs, ce));
+        ranges_need_compact.push_back((cs, ce, compact_bottommost));
     }
 
     Ok(ranges_need_compact)
@@ -388,7 +402,7 @@ mod tests {
         .unwrap();
         let (s, e) = (data_key(b"k0"), data_key(b"k5"));
         let mut expected_ranges = VecDeque::new();
-        expected_ranges.push_back((s, e));
+        expected_ranges.push_back((s, e, false));
         assert_eq!(ranges_need_to_compact, expected_ranges);
 
         // gc 5..10
@@ -415,7 +429,7 @@ mod tests {
         .unwrap();
         let (s, e) = (data_key(b"k0"), data_key(b"k9"));
         let mut expected_ranges = VecDeque::new();
-        expected_ranges.push_back((s, e));
+        expected_ranges.push_back((s, e, false));
         assert_eq!(ranges_need_to_compact, expected_ranges);
     }
 }

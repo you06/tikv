@@ -299,7 +299,7 @@ impl<T: Simulator> Cluster<T> {
     pub fn compact_data(&self) {
         for engine in self.engines.values() {
             let db = &engine.kv;
-            db.compact_range(CF_DEFAULT, None, None, false, 1).unwrap();
+            db.compact_range(CF_DEFAULT, None, None, false, 1, false).unwrap();
         }
     }
 

@@ -460,6 +460,7 @@ mod tests {
             None,  // end_key
             false, // exclusive_manual
             1,     // max_subcompactions
+            false, // bottommost
         )
         .unwrap();
 
