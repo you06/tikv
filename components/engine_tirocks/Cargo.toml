@@ -12,5 +12,5 @@ tikv_util = { path = "../tikv_util" }
 tirocks = { git = "https://github.com/busyjay/tirocks.git", branch = "dev" }
 
 [dev-dependencies]
-kvproto = { git = "https://github.com/pingcap/kvproto.git" }
+kvproto = { git = "https://github.com/you06/kvproto.git", branch = "hlc-demo" }
 tempfile = "3.0"

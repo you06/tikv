@@ -1,7 +1,7 @@
 // Copyright 2017 TiKV Project Authors. Licensed under Apache-2.0.
 
 // #[PerformanceCriticalPath]: TiKV gRPC APIs implementation
-use std::{mem, sync::Arc};
+use std::{mem, sync::Arc, sync::atomic::{AtomicU64, Ordering}};
 
 use api_version::KvFormat;
 use fail::fail_point;
@@ -65,6 +65,7 @@ use crate::{
         SecondaryLocksStatus, Storage, TxnStatus,
     },
 };
+use lazy_static::lazy_static;
 
 const GRPC_MSG_MAX_BATCH_SIZE: usize = 128;
 const GRPC_MSG_NOTIFY_SIZE: usize = 8;
@@ -1062,6 +1063,7 @@ impl<T: RaftStoreRouter<E::Local> + 'static, E: Engine, L: LockManager, F: KvFor
         let request_handler = stream.try_for_each(move |mut req| {
             let request_ids = req.take_request_ids();
             let requests: Vec<_> = req.take_requests().into();
+            update_max_ts(req.get_db_ts());
             let queue = storage.get_readpool_queue_per_worker();
             let mut batcher = batch_builder.build(queue, request_ids.len());
             GRPC_REQ_BATCH_COMMANDS_SIZE.observe(requests.len() as f64);
@@ -1102,6 +1104,7 @@ impl<T: RaftStoreRouter<E::Local> + 'static, E: Engine, L: LockManager, F: KvFor
             GRPC_RESP_BATCH_COMMANDS_SIZE.observe(r.request_ids.len() as f64);
             // TODO: per thread load is more reasonable for batching.
             r.set_transport_layer_load(grpc_thread_load.total_load() as u64);
+            r.set_max_ts(get_max_ts());
             GrpcResult::<(BatchCommandsResponse, WriteFlags)>::Ok((
                 r,
                 WriteFlags::default().buffer_hint(false),
@@ -2398,6 +2401,27 @@ fn needs_reject_raft_append(reject_messages_on_memory_ratio: f64) -> bool {
         }
     }
     false
+}
+
+
+lazy_static! {
+    static ref MAX_TS: AtomicU64 = AtomicU64::new(0);
+}
+
+fn update_max_ts(db_ts: u64) {
+    loop {
+        let old_ts = MAX_TS.load(Ordering::Acquire);
+        if old_ts >= db_ts {
+            return;
+        }
+        if MAX_TS.compare_exchange(old_ts, db_ts, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            return;
+        }
+    }
+}
+
+fn get_max_ts() -> u64 {
+    MAX_TS.load(Ordering::Acquire)
 }
 
 #[cfg(test)]
