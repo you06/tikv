@@ -639,7 +639,7 @@ impl<E: Engine> Endpoint<E> {
 
                         if !all_data.is_empty() {
                             let snapshot = unsafe {
-                                with_tls_engine(|e: &E| e.snapshot_on_kv_engine(&[], &[])).unwrap()
+                                with_tls_engine(|e: &mut E| e.snapshot_on_kv_engine(&[], &[])).unwrap()
                             };
                             let mut point_getter =
                                 PointGetterBuilder::new(snapshot, start_ts).build().unwrap();
