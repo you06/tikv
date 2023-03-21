@@ -7473,7 +7473,7 @@ checksum = "541b12c998c5b56aa2b4e6f18f03664eef9a4fd0a246a55594efae6cc2d964b5"
 [[package]]
 name = "yatp"
 version = "0.0.1"
-source = "git+https://github.com/you06/yatp.git?branch=regression-7.0#2afa63221f4292b65ebc985db110d1e7f95292f5"
+source = "git+https://github.com/you06/yatp.git?branch=regression-7.0#667bb472d32e941ed82e00ae201c5e405200a22b"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-skiplist",
@@ -7530,3 +7530,8 @@ dependencies = [
  "cc",
  "libc 0.2.139",
 ]
+
+[[patch.unused]]
+name = "crossbeam-deque"
+version = "0.8.2"
+source = "git+https://github.com/crossbeam-rs/crossbeam?rev=41ed3d948720f26149b2ebeaf58fe8a193134056#41ed3d948720f26149b2ebeaf58fe8a193134056"
