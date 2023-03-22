@@ -62,7 +62,7 @@ tikv_util = { workspace = true }
 time = "0.1"
 tracker = { workspace = true }
 txn_types = { workspace = true }
-yatp = { git = "https://github.com/tikv/yatp.git", branch = "master" }
+yatp = { git = "https://github.com/tikv/yatp.git", rev = "57e0b6562b628bb8556288ec966a4fe92b893bcb" }
 
 [dev-dependencies]
 engine_test = { workspace = true }
