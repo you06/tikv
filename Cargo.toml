@@ -215,6 +215,9 @@ fs2 = { git = "https://github.com/tabokie/fs2-rs", branch = "tikv" }
 # Remove this when a new version is release. We need to solve rust-lang/cmake-rs#143.
 cmake = { git = "https://github.com/rust-lang/cmake-rs" }
 
+
+crossbeam-deque = {git = "https://github.com/crossbeam-rs/crossbeam", rev="41ed3d948720f26149b2ebeaf58fe8a193134056"}
+
 [target.'cfg(target_os = "linux")'.dependencies]
 procinfo = { git = "https://github.com/tikv/procinfo-rs", rev = "6599eb9dca74229b2c1fcc44118bef7eff127128" }
 # When you modify TiKV cooperatively with kvproto, this will be useful to submit the PR to TiKV and the PR to
@@ -378,7 +381,7 @@ grpcio = { version = "0.10.4", default-features = false, features = ["openssl-ve
 grpcio-health = { version = "0.10.4", default-features = false, features = ["protobuf-codec"] }
 tipb = { git = "https://github.com/pingcap/tipb.git" }
 kvproto = { git = "https://github.com/pingcap/kvproto.git" }
-yatp = { git = "https://github.com/tikv/yatp.git", rev = "7ed25299d60a5338bea4ac0ed7470887ab74a010" }
+yatp = { git = "https://github.com/you06/yatp.git", rev = "d9da6e2c6dca6770eb1797fbc72108374905043a" }
 tokio-timer = { git = "https://github.com/tikv/tokio", branch = "tokio-timer-hotfix" }
 slog = { version = "2.3", features = ["max_level_trace", "release_max_level_debug"] }
 slog-global = { version = "0.1", git = "https://github.com/breeswish/slog-global.git", rev = "d592f88e4dbba5eb439998463054f1a44fbf17b9" }

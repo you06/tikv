@@ -7473,7 +7473,7 @@ checksum = "541b12c998c5b56aa2b4e6f18f03664eef9a4fd0a246a55594efae6cc2d964b5"
 [[package]]
 name = "yatp"
 version = "0.0.1"
-source = "git+https://github.com/tikv/yatp.git?rev=7ed25299d60a5338bea4ac0ed7470887ab74a010#7ed25299d60a5338bea4ac0ed7470887ab74a010"
+source = "git+https://github.com/you06/yatp.git?rev=d9da6e2c6dca6770eb1797fbc72108374905043a#d9da6e2c6dca6770eb1797fbc72108374905043a"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-skiplist",
@@ -7530,3 +7530,8 @@ dependencies = [
  "cc",
  "libc 0.2.139",
 ]
+
+[[patch.unused]]
+name = "crossbeam-deque"
+version = "0.8.2"
+source = "git+https://github.com/crossbeam-rs/crossbeam?rev=41ed3d948720f26149b2ebeaf58fe8a193134056#41ed3d948720f26149b2ebeaf58fe8a193134056"
