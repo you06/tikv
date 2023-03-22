@@ -29,4 +29,4 @@ slog-global = { workspace = true }
 test_pd = { workspace = true }
 test_pd_client = { workspace = true }
 tikv_util = { workspace = true }
-yatp = { git = "https://github.com/tikv/yatp.git", rev = "57e0b6562b628bb8556288ec966a4fe92b893bcb" }
+yatp = { git = "https://github.com/tikv/yatp.git", rev = "5468081572a21d0c1dad6898ec6d6f00ff248eb0" }
