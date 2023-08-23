@@ -161,7 +161,7 @@ impl ResponseBatchConsumer<(Option<Vec<u8>>, Statistics)> for GetCommandResponse
         id: u64,
         res: Result<(Option<Vec<u8>>, Statistics)>,
         begin: Instant,
-        request_source: String,
+        ctx: Context,
     ) {
         let mut resp = GetResponse::default();
         if let Some(err) = extract_region_error(&res) {
@@ -186,7 +186,7 @@ impl ResponseBatchConsumer<(Option<Vec<u8>>, Statistics)> for GetCommandResponse
             ..Default::default()
         };
         let mesure =
-            GrpcRequestDuration::new(begin, GrpcTypeKind::kv_batch_get_command, request_source);
+            GrpcRequestDuration::new(begin, GrpcTypeKind::kv_batch_get_command, ctx);
         let task = MeasuredSingleResponse::new(id, res, mesure);
         if self.tx.send_with(task, WakePolicy::Immediately).is_err() {
             error!("KvService response batch commands fail");
@@ -200,7 +200,7 @@ impl ResponseBatchConsumer<Option<Vec<u8>>> for GetCommandResponseConsumer {
         id: u64,
         res: Result<Option<Vec<u8>>>,
         begin: Instant,
-        request_source: String,
+        ctx: &Context,
     ) {
         let mut resp = RawGetResponse::default();
         if let Some(err) = extract_region_error(&res) {
@@ -217,7 +217,7 @@ impl ResponseBatchConsumer<Option<Vec<u8>>> for GetCommandResponseConsumer {
             ..Default::default()
         };
         let mesure =
-            GrpcRequestDuration::new(begin, GrpcTypeKind::raw_batch_get_command, request_source);
+            GrpcRequestDuration::new(begin, GrpcTypeKind::raw_batch_get_command, ctx);
         let task = MeasuredSingleResponse::new(id, res, mesure);
         if self.tx.send_with(task, WakePolicy::Immediately).is_err() {
             error!("KvService response batch commands fail");

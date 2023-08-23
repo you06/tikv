@@ -6,6 +6,7 @@ use std::{
 };
 
 use collections::HashMap;
+use kvproto::kvrpcpb::Context;
 use prometheus::{exponential_buckets, local::LocalIntCounter, *};
 use prometheus_static_metric::*;
 use tikv_util::time::Instant;
@@ -576,7 +577,8 @@ thread_local! {
     static LAST_LOCAL_FLUSH_TIME: Cell<Instant> = Cell::new(Instant::now_coarse());
 }
 
-pub fn record_request_source_metrics(source: String, duration: Duration) {
+pub fn record_request_source_metrics(ctx: &Context, duration: Duration) {
+    let source = ctx.get_request_source().to_owned();
     let need_flush = LAST_LOCAL_FLUSH_TIME.with(|last_local_flush_time| {
         let now = Instant::now_coarse();
         if now - last_local_flush_time.get() > Duration::from_secs(1) {

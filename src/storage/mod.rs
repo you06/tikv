@@ -3396,7 +3396,7 @@ pub trait ResponseBatchConsumer<ConsumeResponse: Sized>: Send {
         id: u64,
         res: Result<ConsumeResponse>,
         begin: Instant,
-        request_source: String,
+        ctx: &Context,
     );
 }
 

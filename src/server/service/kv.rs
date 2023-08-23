@@ -196,7 +196,6 @@ macro_rules! handle_request {
             forward_unary!(self.proxy, $fn_name, ctx, req, sink);
             let begin_instant = Instant::now();
 
-            let source = req.get_context().get_request_source().to_owned();
             let resource_control_ctx = req.get_context().get_resource_control_context();
             if let Some(resource_manager) = &self.resource_manager {
                 resource_manager.consume_penalty(resource_control_ctx);
@@ -213,7 +212,7 @@ macro_rules! handle_request {
                 GRPC_MSG_HISTOGRAM_STATIC
                     .$fn_name
                     .observe(elapsed.as_secs_f64());
-                record_request_source_metrics(source, elapsed);
+                record_request_source_metrics(req.get_context(), elapsed);
                 ServerResult::Ok(())
             }
             .map_err(|e| {
@@ -422,7 +421,6 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
     ) {
         let begin_instant = Instant::now();
 
-        let source = req.get_context().get_request_source().to_owned();
         let resp = future_prepare_flashback_to_version(self.storage.clone(), req);
         let task = async move {
             let resp = resp.await?;
@@ -431,7 +429,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
             GRPC_MSG_HISTOGRAM_STATIC
                 .kv_prepare_flashback_to_version
                 .observe(elapsed.as_secs_f64());
-            record_request_source_metrics(source, elapsed);
+            record_request_source_metrics(req.get_context(), elapsed);
             ServerResult::Ok(())
         }
         .map_err(|e| {
@@ -453,7 +451,6 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
     ) {
         let begin_instant = Instant::now();
 
-        let source = req.get_context().get_request_source().to_owned();
         let resp = future_flashback_to_version(self.storage.clone(), req);
         let task = async move {
             let resp = resp.await?;
@@ -462,7 +459,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
             GRPC_MSG_HISTOGRAM_STATIC
                 .kv_flashback_to_version
                 .observe(elapsed.as_secs_f64());
-            record_request_source_metrics(source, elapsed);
+            record_request_source_metrics(req.get_context(), elapsed);
             ServerResult::Ok(())
         }
         .map_err(|e| {
@@ -478,7 +475,6 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
 
     fn coprocessor(&mut self, ctx: RpcContext<'_>, req: Request, sink: UnarySink<Response>) {
         forward_unary!(self.proxy, coprocessor, ctx, req, sink);
-        let source = req.get_context().get_request_source().to_owned();
         let resource_control_ctx = req.get_context().get_resource_control_context();
         if let Some(resource_manager) = &self.resource_manager {
             resource_manager.consume_penalty(resource_control_ctx);
@@ -496,7 +492,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
             GRPC_MSG_HISTOGRAM_STATIC
                 .coprocessor
                 .observe(elapsed.as_secs_f64());
-            record_request_source_metrics(source, elapsed);
+            record_request_source_metrics(req.get_context(), elapsed);
             ServerResult::Ok(())
         }
         .map_err(|e| {
@@ -516,7 +512,6 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
         req: RawCoprocessorRequest,
         sink: UnarySink<RawCoprocessorResponse>,
     ) {
-        let source = req.get_context().get_request_source().to_owned();
         let resource_control_ctx = req.get_context().get_resource_control_context();
         if let Some(resource_manager) = &self.resource_manager {
             resource_manager.consume_penalty(resource_control_ctx);
@@ -534,7 +529,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
             GRPC_MSG_HISTOGRAM_STATIC
                 .raw_coprocessor
                 .observe(elapsed.as_secs_f64());
-            record_request_source_metrics(source, elapsed);
+            record_request_source_metrics(req.get_context(), elapsed);
             ServerResult::Ok(())
         }
         .map_err(|e| {
@@ -561,7 +556,6 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
         assert!(!req.get_start_key().is_empty());
         assert!(!req.get_end_key().is_empty());
 
-        let source = req.get_context().get_request_source().to_owned();
         let (cb, f) = paired_future_callback();
         let res = self.gc_worker.unsafe_destroy_range(
             req.take_context(),
@@ -585,7 +579,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
             GRPC_MSG_HISTOGRAM_STATIC
                 .unsafe_destroy_range
                 .observe(elapsed.as_secs_f64());
-            record_request_source_metrics(source, elapsed);
+            record_request_source_metrics(req.get_context(), elapsed);
             ServerResult::Ok(())
         }
         .map_err(|e| {
@@ -1287,13 +1281,13 @@ fn handle_measures_for_batch_commands(measures: &mut MeasuredBatchResponse) {
         let GrpcRequestDuration {
             label,
             begin,
-            source,
+            ctx,
         } = measure;
         let elapsed = now.saturating_duration_since(begin);
         GRPC_MSG_HISTOGRAM_STATIC
             .get(label)
             .observe(elapsed.as_secs_f64());
-        record_request_source_metrics(source, elapsed);
+        record_request_source_metrics(ctx, elapsed);
         let exec_details = resp.cmd.as_mut().and_then(|cmd| match cmd {
             Get(resp) => Some(resp.mut_exec_details_v2()),
             Prewrite(resp) => Some(resp.mut_exec_details_v2()),
@@ -2230,17 +2224,17 @@ pub mod batch_commands_request {
 
 /// To measure execute time for a given request.
 #[derive(Debug)]
-pub struct GrpcRequestDuration {
+pub struct GrpcRequestDuration<'a> {
     pub begin: Instant,
     pub label: GrpcTypeKind,
-    pub source: String,
+    pub ctx: &'a Context,
 }
-impl GrpcRequestDuration {
-    pub fn new(begin: Instant, label: GrpcTypeKind, source: String) -> Self {
+impl GrpcRequestDuration<'a> {
+    pub fn new(begin: Instant, label: GrpcTypeKind, ctx: &'a Context) -> Self {
         GrpcRequestDuration {
             begin,
             label,
-            source,
+            ctx,
         }
     }
 }
