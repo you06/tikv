@@ -196,7 +196,7 @@ macro_rules! handle_request {
             forward_unary!(self.proxy, $fn_name, ctx, req, sink);
             let begin_instant = Instant::now();
 
-            let source = req.get_context().get_request_source().to_owned();
+            let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
             let resource_control_ctx = req.get_context().get_resource_control_context();
             if let Some(resource_manager) = &self.resource_manager {
                 resource_manager.consume_penalty(resource_control_ctx);
@@ -213,7 +213,7 @@ macro_rules! handle_request {
                 GRPC_MSG_HISTOGRAM_STATIC
                     .$fn_name
                     .observe(elapsed.as_secs_f64());
-                record_request_source_metrics(source, elapsed);
+                record_request_source_metrics(source_ctx, elapsed);
                 ServerResult::Ok(())
             }
             .map_err(|e| {
@@ -422,7 +422,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
     ) {
         let begin_instant = Instant::now();
 
-        let source = req.get_context().get_request_source().to_owned();
+        let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
         let resp = future_prepare_flashback_to_version(self.storage.clone(), req);
         let task = async move {
             let resp = resp.await?;
@@ -431,7 +431,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
             GRPC_MSG_HISTOGRAM_STATIC
                 .kv_prepare_flashback_to_version
                 .observe(elapsed.as_secs_f64());
-            record_request_source_metrics(source, elapsed);
+            record_request_source_metrics(source_ctx, elapsed);
             ServerResult::Ok(())
         }
         .map_err(|e| {
@@ -453,7 +453,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
     ) {
         let begin_instant = Instant::now();
 
-        let source = req.get_context().get_request_source().to_owned();
+        let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
         let resp = future_flashback_to_version(self.storage.clone(), req);
         let task = async move {
             let resp = resp.await?;
@@ -462,7 +462,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
             GRPC_MSG_HISTOGRAM_STATIC
                 .kv_flashback_to_version
                 .observe(elapsed.as_secs_f64());
-            record_request_source_metrics(source, elapsed);
+            record_request_source_metrics(source_ctx, elapsed);
             ServerResult::Ok(())
         }
         .map_err(|e| {
@@ -478,7 +478,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
 
     fn coprocessor(&mut self, ctx: RpcContext<'_>, req: Request, sink: UnarySink<Response>) {
         forward_unary!(self.proxy, coprocessor, ctx, req, sink);
-        let source = req.get_context().get_request_source().to_owned();
+        let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
         let resource_control_ctx = req.get_context().get_resource_control_context();
         if let Some(resource_manager) = &self.resource_manager {
             resource_manager.consume_penalty(resource_control_ctx);
@@ -496,7 +496,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
             GRPC_MSG_HISTOGRAM_STATIC
                 .coprocessor
                 .observe(elapsed.as_secs_f64());
-            record_request_source_metrics(source, elapsed);
+            record_request_source_metrics(source_ctx, elapsed);
             ServerResult::Ok(())
         }
         .map_err(|e| {
@@ -516,7 +516,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
         req: RawCoprocessorRequest,
         sink: UnarySink<RawCoprocessorResponse>,
     ) {
-        let source = req.get_context().get_request_source().to_owned();
+        let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
         let resource_control_ctx = req.get_context().get_resource_control_context();
         if let Some(resource_manager) = &self.resource_manager {
             resource_manager.consume_penalty(resource_control_ctx);
@@ -534,7 +534,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
             GRPC_MSG_HISTOGRAM_STATIC
                 .raw_coprocessor
                 .observe(elapsed.as_secs_f64());
-            record_request_source_metrics(source, elapsed);
+            record_request_source_metrics(source_ctx, elapsed);
             ServerResult::Ok(())
         }
         .map_err(|e| {
@@ -561,7 +561,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
         assert!(!req.get_start_key().is_empty());
         assert!(!req.get_end_key().is_empty());
 
-        let source = req.get_context().get_request_source().to_owned();
+        let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
         let (cb, f) = paired_future_callback();
         let res = self.gc_worker.unsafe_destroy_range(
             req.take_context(),
@@ -585,7 +585,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Tikv for Service<E, L, F> {
             GRPC_MSG_HISTOGRAM_STATIC
                 .unsafe_destroy_range
                 .observe(elapsed.as_secs_f64());
-            record_request_source_metrics(source, elapsed);
+            record_request_source_metrics(source_ctx, elapsed);
             ServerResult::Ok(())
         }
         .map_err(|e| {
@@ -1098,7 +1098,7 @@ fn response_batch_commands_request<F, T>(
     tx: Sender<MeasuredSingleResponse>,
     begin: Instant,
     label: GrpcTypeKind,
-    source: String,
+    source_ctx: RequestSourceContext,
 ) where
     MemoryTraceGuard<batch_commands_response::Response>: From<T>,
     F: Future<Output = Result<T, ()>> + Send + 'static,
@@ -1108,7 +1108,7 @@ fn response_batch_commands_request<F, T>(
             let measure = GrpcRequestDuration {
                 begin,
                 label,
-                source,
+                source_ctx,
             };
             let task = MeasuredSingleResponse::new(id, resp, measure);
             if let Err(e) = tx.send_with(task, WakePolicy::Immediately) {
@@ -1147,7 +1147,7 @@ fn handle_batch_commands_request<E: Engine, L: LockManager, F: KvFormat>(
                     // For some invalid requests.
                     let begin_instant = Instant::now();
                     let resp = future::ok(batch_commands_response::Response::default());
-                    response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::invalid, String::default());
+                    response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::invalid, RequestSourceContext::default());
                 },
                 Some(batch_commands_request::request::Cmd::Get(req)) => {
                     let resource_control_ctx = req.get_context().get_resource_control_context();
@@ -1163,11 +1163,11 @@ fn handle_batch_commands_request<E: Engine, L: LockManager, F: KvFormat>(
                         batcher.as_mut().unwrap().add_get_request(req, id);
                     } else {
                        let begin_instant = Instant::now();
-                       let source = req.get_context().get_request_source().to_owned();
+                       let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
                        let resp = future_get(storage, req)
                             .map_ok(oneof!(batch_commands_response::response::Cmd::Get))
                             .map_err(|_| GRPC_MSG_FAIL_COUNTER.kv_get.inc());
-                        response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::kv_get, source);
+                        response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::kv_get, source_ctx);
                     }
                 },
                 Some(batch_commands_request::request::Cmd::RawGet(req)) => {
@@ -1184,14 +1184,14 @@ fn handle_batch_commands_request<E: Engine, L: LockManager, F: KvFormat>(
                         batcher.as_mut().unwrap().add_raw_get_request(req, id);
                     } else {
                        let begin_instant = Instant::now();
-                       let source = req.get_context().get_request_source().to_owned();
+                       let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
                        let resp = future_raw_get(storage, req)
                             .map_ok(oneof!(batch_commands_response::response::Cmd::RawGet))
                             .map_err(|_| GRPC_MSG_FAIL_COUNTER.raw_get.inc());
-                        response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::raw_get, source);
+                        response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::raw_get, source_ctx);
                     }
                 },
-                Some(batch_commands_request::request::Cmd::Coprocessor(mut req)) => {
+                Some(batch_commands_request::request::Cmd::Coprocessor(req)) => {
                     let resource_control_ctx = req.get_context().get_resource_control_context();
                     if let Some(resource_manager) = resource_manager {
                         resource_manager.consume_penalty(resource_control_ctx);
@@ -1200,13 +1200,13 @@ fn handle_batch_commands_request<E: Engine, L: LockManager, F: KvFormat>(
                         .with_label_values(&[resource_control_ctx.get_resource_group_name()])
                         .inc();
                     let begin_instant = Instant::now();
-                    let source = req.mut_context().take_request_source();
+                    let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
                     let resp = future_copr(copr, Some(peer.to_string()), req)
                         .map_ok(|resp| {
                             resp.map(oneof!(batch_commands_response::response::Cmd::Coprocessor))
                         })
                         .map_err(|_| GRPC_MSG_FAIL_COUNTER.coprocessor.inc());
-                    response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::coprocessor, source);
+                    response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::coprocessor, source_ctx);
                 },
                 Some(batch_commands_request::request::Cmd::Empty(req)) => {
                     let begin_instant = Instant::now();
@@ -1222,10 +1222,10 @@ fn handle_batch_commands_request<E: Engine, L: LockManager, F: KvFormat>(
                         tx.clone(),
                         begin_instant,
                         GrpcTypeKind::invalid,
-                        String::default(),
+                        RequestSourceContext::default(),
                     );
                 }
-                $(Some(batch_commands_request::request::Cmd::$cmd(mut req)) => {
+                $(Some(batch_commands_request::request::Cmd::$cmd(req)) => {
                     let resource_control_ctx = req.get_context().get_resource_control_context();
                     if let Some(resource_manager) = resource_manager {
                         resource_manager.consume_penalty(resource_control_ctx);
@@ -1234,11 +1234,11 @@ fn handle_batch_commands_request<E: Engine, L: LockManager, F: KvFormat>(
                         .with_label_values(&[resource_control_ctx.get_resource_group_name()])
                         .inc();
                     let begin_instant = Instant::now();
-                    let source = req.mut_context().take_request_source();
+                    let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
                     let resp = $future_fn($($arg,)* req)
                         .map_ok(oneof!(batch_commands_response::response::Cmd::$cmd))
                         .map_err(|_| GRPC_MSG_FAIL_COUNTER.$metric_name.inc());
-                    response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::$metric_name, source);
+                    response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::$metric_name, source_ctx);
                 })*
                 Some(batch_commands_request::request::Cmd::Import(_)) => unimplemented!(),
             }
@@ -1287,13 +1287,13 @@ fn handle_measures_for_batch_commands(measures: &mut MeasuredBatchResponse) {
         let GrpcRequestDuration {
             label,
             begin,
-            source,
+            source_ctx,
         } = measure;
         let elapsed = now.saturating_duration_since(begin);
         GRPC_MSG_HISTOGRAM_STATIC
             .get(label)
             .observe(elapsed.as_secs_f64());
-        record_request_source_metrics(source, elapsed);
+        record_request_source_metrics(source_ctx, elapsed);
         let exec_details = resp.cmd.as_mut().and_then(|cmd| match cmd {
             Get(resp) => Some(resp.mut_exec_details_v2()),
             Prewrite(resp) => Some(resp.mut_exec_details_v2()),
@@ -2233,14 +2233,14 @@ pub mod batch_commands_request {
 pub struct GrpcRequestDuration {
     pub begin: Instant,
     pub label: GrpcTypeKind,
-    pub source: String,
+    pub source_ctx: RequestSourceContext,
 }
 impl GrpcRequestDuration {
-    pub fn new(begin: Instant, label: GrpcTypeKind, source: String) -> Self {
+    pub fn new(begin: Instant, label: GrpcTypeKind, source_ctx: RequestSourceContext) -> Self {
         GrpcRequestDuration {
             begin,
             label,
-            source,
+            source_ctx,
         }
     }
 }

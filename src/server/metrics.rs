@@ -6,6 +6,7 @@ use std::{
 };
 
 use collections::HashMap;
+use kvproto::kvrpcpb::Context;
 use prometheus::{exponential_buckets, local::LocalIntCounter, *};
 use prometheus_static_metric::*;
 use tikv_util::time::Instant;
@@ -261,13 +262,13 @@ lazy_static! {
     pub static ref GRPC_REQUEST_SOURCE_COUNTER_VEC: IntCounterVec = register_int_counter_vec!(
             "tikv_grpc_request_source_counter_vec",
             "Counter of different sources of RPC requests",
-            &["source"]
+            &["source", "read_type"]
         )
         .unwrap();
     pub static ref GRPC_REQUEST_SOURCE_DURATION_VEC: IntCounterVec = register_int_counter_vec!(
             "tikv_grpc_request_source_duration_vec",
             "Total duration of different sources of RPC requests (in microseconds)",
-            &["source"]
+            &["source", "read_type"]
         )
         .unwrap();
 }
@@ -558,25 +559,52 @@ struct LocalRequestSourceMetrics {
 }
 
 impl LocalRequestSourceMetrics {
-    fn new(source: &str) -> Self {
+    fn new(source: &str, read_type: &str) -> Self {
         LocalRequestSourceMetrics {
             count: GRPC_REQUEST_SOURCE_COUNTER_VEC
-                .with_label_values(&[source])
+                .with_label_values(&[source, read_type])
                 .local(),
             duration_us: GRPC_REQUEST_SOURCE_DURATION_VEC
-                .with_label_values(&[source])
+                .with_label_values(&[source, read_type])
                 .local(),
         }
     }
 }
 
+#[derive(Debug)]
+pub struct RequestSourceContext {
+    replica_read: bool,
+    stale_read: bool,
+    source: String,
+}
+
+impl RequestSourceContext {
+    pub fn from_kvcontext(ctx: &Context) -> Self {
+        RequestSourceContext {
+            replica_read: ctx.get_replica_read(),
+            stale_read: ctx.get_stale_read(),
+            source: ctx.get_request_source().to_owned(),
+        }
+    }
+}
+
+impl Default for RequestSourceContext {
+    fn default() -> Self {
+        RequestSourceContext {
+            replica_read: false,
+            stale_read: false,
+            source: String::default(),
+        }
+    }
+}
+
 thread_local! {
-    static REQUEST_SOURCE_METRICS_MAP: RefCell<HashMap<String, LocalRequestSourceMetrics>> = RefCell::new(HashMap::default());
+    static REQUEST_SOURCE_METRICS_MAP: RefCell<HashMap<(String, String), LocalRequestSourceMetrics>> = RefCell::new(HashMap::default());
 
     static LAST_LOCAL_FLUSH_TIME: Cell<Instant> = Cell::new(Instant::now_coarse());
 }
 
-pub fn record_request_source_metrics(source: String, duration: Duration) {
+pub fn record_request_source_metrics(ctx: RequestSourceContext, duration: Duration) {
     let need_flush = LAST_LOCAL_FLUSH_TIME.with(|last_local_flush_time| {
         let now = Instant::now_coarse();
         if now - last_local_flush_time.get() > Duration::from_secs(1) {
@@ -586,11 +614,19 @@ pub fn record_request_source_metrics(source: String, duration: Duration) {
             false
         }
     });
+    let source = ctx.source;
+    let read_type = if ctx.stale_read {
+        "stale_read"
+    } else if ctx.replica_read {
+        "replica_read"
+    } else {
+        "leader_read"
+    };
     REQUEST_SOURCE_METRICS_MAP.with(|map| {
         let mut map = map.borrow_mut();
         let metrics = map
-            .entry(source)
-            .or_insert_with_key(|k| LocalRequestSourceMetrics::new(k));
+            .entry((source, read_type.to_owned()))
+            .or_insert_with_key(|k| LocalRequestSourceMetrics::new(&k.0, &k.1));
         metrics.count.inc();
         metrics.duration_us.inc_by(duration.as_micros() as u64);
         if need_flush {

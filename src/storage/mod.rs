@@ -121,7 +121,7 @@ pub use self::{
 use self::{kv::SnapContext, test_util::latest_feature_gate};
 use crate::{
     read_pool::{ReadPool, ReadPoolHandle},
-    server::lock_manager::waiter_manager,
+    server::{lock_manager::waiter_manager, metrics::RequestSourceContext},
     storage::{
         config::Config,
         kv::{with_tls_engine, Modify, WriteData},
@@ -814,7 +814,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                     set_tls_tracker_token(tracker);
                     let mut ctx = req.take_context();
                     let deadline = Self::get_deadline(&ctx);
-                    let source = ctx.take_request_source();
+                    let source_ctx = RequestSourceContext::from_kvcontext(req.get_context());
                     let region_id = ctx.get_region_id();
                     let peer = ctx.get_peer();
 
@@ -854,7 +854,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                             snap_ctx
                         }
                         Err(e) => {
-                            consumer.consume(id, Err(e), begin_instant, source);
+                            consumer.consume(id, Err(e), begin_instant, source_ctx);
                             continue;
                         }
                     };
@@ -870,7 +870,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                         access_locks,
                         region_id,
                         id,
-                        source,
+                        source_ctx,
                         tracker,
                         deadline,
                     ));
@@ -887,13 +887,13 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                         access_locks,
                         region_id,
                         id,
-                        source,
+                        source_ctx,
                         tracker,
                         deadline,
                     ) = req_snap;
                     let snap_res = snap.await;
                     if let Err(e) = deadline.check() {
-                        consumer.consume(id, Err(Error::from(e)), begin_instant, source);
+                        consumer.consume(id, Err(Error::from(e)), begin_instant, source_ctx);
                         continue;
                     }
 
@@ -924,7 +924,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                                         v.map_err(|e| Error::from(txn::Error::from(e)))
                                             .map(|v| (v, stat)),
                                         begin_instant,
-                                        source,
+                                        source_ctx,
                                     );
                                 }
                                 Err(e) => {
@@ -932,13 +932,13 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                                         id,
                                         Err(Error::from(txn::Error::from(e))),
                                         begin_instant,
-                                        source,
+                                        source_ctx,
                                     );
                                 }
                             }
                         }),
                         Err(e) => {
-                            consumer.consume(id, Err(e), begin_instant, source);
+                            consumer.consume(id, Err(e), begin_instant, source_ctx);
                         }
                     }
                 }
@@ -1804,8 +1804,9 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                 }
                 Self::with_tls_engine(|engine| engine.release_snapshot());
                 let begin_instant = Instant::now();
-                for (id, key, mut ctx, mut req, snap) in snaps {
+                for (id, key, ctx, mut req, snap) in snaps {
                     let cf = req.take_cf();
+                    let source_ctx = RequestSourceContext::from_kvcontext(&ctx);
                     match snap.await {
                         Ok(snapshot) => {
                             let mut stats = Statistics::default();
@@ -1819,7 +1820,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                                             .raw_get_key_value(cf, &key, &mut stats)
                                             .map_err(Error::from),
                                         begin_instant,
-                                        ctx.take_request_source(),
+                                        source_ctx,
                                     );
                                     tls_collect_read_flow(
                                         ctx.get_region_id(),
@@ -1830,17 +1831,12 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                                     );
                                 }
                                 Err(e) => {
-                                    consumer.consume(
-                                        id,
-                                        Err(e),
-                                        begin_instant,
-                                        ctx.take_request_source(),
-                                    );
+                                    consumer.consume(id, Err(e), begin_instant, source_ctx);
                                 }
                             }
                         }
                         Err(e) => {
-                            consumer.consume(id, Err(e), begin_instant, ctx.take_request_source());
+                            consumer.consume(id, Err(e), begin_instant, source_ctx);
                         }
                     }
                 }
@@ -3396,7 +3392,7 @@ pub trait ResponseBatchConsumer<ConsumeResponse: Sized>: Send {
         id: u64,
         res: Result<ConsumeResponse>,
         begin: Instant,
-        request_source: String,
+        source_ctx: RequestSourceContext,
     );
 }
 
@@ -3696,7 +3692,7 @@ pub mod test_util {
             id: u64,
             res: Result<(Option<Vec<u8>>, Statistics)>,
             _: tikv_util::time::Instant,
-            _source: String,
+            _source: RequestSourceContext,
         ) {
             self.data.lock().unwrap().push(GetResult {
                 id,
@@ -3711,7 +3707,7 @@ pub mod test_util {
             id: u64,
             res: Result<Option<Vec<u8>>>,
             _: tikv_util::time::Instant,
-            _source: String,
+            _source: RequestSourceContext,
         ) {
             self.data.lock().unwrap().push(GetResult { id, res });
         }
