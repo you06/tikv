@@ -571,10 +571,11 @@ impl LocalRequestSourceMetrics {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RequestSourceContext {
     replica_read: bool,
     stale_read: bool,
+    is_retry: bool,
     source: String,
 }
 
@@ -583,17 +584,8 @@ impl RequestSourceContext {
         RequestSourceContext {
             replica_read: ctx.get_replica_read(),
             stale_read: ctx.get_stale_read(),
+            is_retry: ctx.get_is_retry_request(),
             source: ctx.get_request_source().to_owned(),
-        }
-    }
-}
-
-impl Default for RequestSourceContext {
-    fn default() -> Self {
-        RequestSourceContext {
-            replica_read: false,
-            stale_read: false,
-            source: String::default(),
         }
     }
 }
@@ -615,12 +607,13 @@ pub fn record_request_source_metrics(ctx: RequestSourceContext, duration: Durati
         }
     });
     let source = ctx.source;
-    let read_type = if ctx.stale_read {
-        "stale_read"
-    } else if ctx.replica_read {
-        "replica_read"
-    } else {
-        "leader_read"
+    let read_type = match (ctx.is_retry, ctx.stale_read, ctx.replica_read) {
+        (false, false, false) => "leader_read",
+        (true, false, false) => "retry_leader_read",
+        (false, true, _) => "stale_read",
+        (false, false, true) => "replica_read",
+        (true, false, true) => "retry_replica_read",
+        _ => "unknown",
     };
     REQUEST_SOURCE_METRICS_MAP.with(|map| {
         let mut map = map.borrow_mut();
