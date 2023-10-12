@@ -63,6 +63,14 @@ impl<S: EngineSnapshot> SnapshotReader<S> {
         self.reader.load_lock(key)
     }
 
+    pub fn load_lock_keys(&mut self, upper: &Key, lower: &Key, lock_ts: TimeStamp) -> Result<Vec<Key>> {
+        self.reader
+            .scan_locks(Some(&upper), Some(&lower), |l| {
+                l.ts == lock_ts
+            }, 0)
+            .map(|res| res.0.map(|(key, _)| key).collect())
+    }
+
     #[inline(always)]
     pub fn key_exist(&mut self, key: &Key, ts: TimeStamp) -> Result<bool> {
         Ok(self
@@ -249,6 +257,13 @@ impl<S: EngineSnapshot> MvccReader<S> {
         };
 
         Ok(res)
+    }
+
+    pub fn iter_lock(&mut self, key: &Key) -> Result<Cursor<S::Iter>> {
+        self.create_lock_cursor()?;
+        let cursor = self.lock_cursor.as_mut().unwrap();
+        cursor.seek(key, &mut self.statistics.lock)?;
+        Ok(cursor.clone())
     }
 
     fn load_in_memory_pessimistic_lock(&self, key: &Key) -> Result<Option<Lock>> {

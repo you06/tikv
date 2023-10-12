@@ -2,6 +2,7 @@
 
 // #[PerformanceCriticalPath]
 use txn_types::Key;
+use engine_traits::{IterOptions, CF_LOCK};
 
 use crate::storage::{
     kv::WriteData,
@@ -31,6 +32,8 @@ command! {
             lock_ts: txn_types::TimeStamp,
             /// The commit timestamp.
             commit_ts: txn_types::TimeStamp,
+            /// The bound hint, hack.
+            bound: Vec<Key>,
         }
 }
 
@@ -57,10 +60,20 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for Commit {
             context.statistics,
         );
 
-        let rows = self.keys.len();
+        let mut keys = self.keys;
+        let mut rows = self.keys.len();
+        if rows == 0 && self.bound.len() == 2 {
+            keys = reader.load_lock_keys(
+                &self.bound[0],
+                &self.bound[1],
+                self.lock_ts,
+            )?;
+            rows = keys.len();
+        }
+
         // Pessimistic txn needs key_hashes to wake up waiters
         let mut released_locks = ReleasedLocks::new();
-        for k in self.keys {
+        for k in keys {
             released_locks.push(commit(&mut txn, &mut reader, k, self.commit_ts)?);
         }
 

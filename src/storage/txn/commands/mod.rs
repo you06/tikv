@@ -244,11 +244,13 @@ impl From<PessimisticLockRequest> for TypedCommand<StorageResult<PessimisticLock
 impl From<CommitRequest> for TypedCommand<TxnStatus> {
     fn from(mut req: CommitRequest) -> Self {
         let keys = req.get_keys().iter().map(|x| Key::from_raw(x)).collect();
+        let bounds = req.get_bounds().iter().map(|x| Key::from_raw(x)).collect();
 
         Commit::new(
             keys,
             req.get_start_version().into(),
             req.get_commit_version().into(),
+            bounds,
             req.take_context(),
         )
     }
