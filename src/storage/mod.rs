@@ -3789,6 +3789,28 @@ pub mod test_util {
             assert_eq!(lock_info.get_lock_for_update_ts(), *expected_for_update_ts);
         }
     }
+
+    pub fn must_no_locks<E: Engine, L: LockManager, F: KvFormat>(
+        storage: &Storage<E, L, F>,
+        ts: u64,
+        start_key: &[u8],
+        end_key: &[u8],
+    ) {
+        let locks = block_on(storage.scan_lock(
+            Context::default(),
+            ts.into(),
+            Some(Key::from_raw(start_key)),
+            Some(Key::from_raw(end_key)),
+            100,
+        ))
+        .unwrap();
+        assert_eq!(
+            locks.len(),
+            0,
+            "lock count not 0, expected: 0; got: {:?}",
+            locks
+        );
+    }
 }
 
 /// All statistics related to KvGet/KvBatchGet.
@@ -3935,6 +3957,7 @@ mod tests {
                     vec![Key::from_raw(b"x")],
                     100.into(),
                     101.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_ok_callback(tx, 3),
@@ -4171,6 +4194,7 @@ mod tests {
                     ],
                     1.into(),
                     2.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_ok_callback(tx, 1),
@@ -4521,6 +4545,7 @@ mod tests {
                     ],
                     1.into(),
                     2.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_ok_callback(tx, 1),
@@ -4669,6 +4694,7 @@ mod tests {
                     ],
                     1.into(),
                     2.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_ok_callback(tx, 1),
@@ -4754,6 +4780,7 @@ mod tests {
                     ],
                     1.into(),
                     2.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_ok_callback(tx, 1),
@@ -4825,6 +4852,7 @@ mod tests {
                     vec![Key::from_raw(b"x")],
                     100.into(),
                     110.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_value_callback(tx.clone(), 2, TxnStatus::committed(110.into())),
@@ -4836,6 +4864,7 @@ mod tests {
                     vec![Key::from_raw(b"y")],
                     101.into(),
                     111.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_value_callback(tx.clone(), 3, TxnStatus::committed(111.into())),
@@ -5087,6 +5116,7 @@ mod tests {
                         vec![key.clone()],
                         start_ts,
                         commit_ts,
+                        vec![],
                         Context::default(),
                     ),
                     expect_value_callback(tx.clone(), 1, TxnStatus::committed(commit_ts)),
@@ -5202,6 +5232,7 @@ mod tests {
                     vec![Key::from_raw(b"k")],
                     ts,
                     *ts.incr(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_value_callback(tx.clone(), 1, TxnStatus::committed(ts)),
@@ -5326,6 +5357,7 @@ mod tests {
                         vec![key.clone()],
                         start_ts,
                         commit_ts,
+                        vec![],
                         Context::default(),
                     ),
                     expect_value_callback(tx.clone(), i as i32, TxnStatus::committed(commit_ts)),
@@ -5385,7 +5417,7 @@ mod tests {
         rx.recv().unwrap();
         storage
             .sched_txn_command(
-                commands::Commit::new(vec![k.clone()], ts, *ts.incr(), Context::default()),
+                commands::Commit::new(vec![k.clone()], ts, *ts.incr(), vec![], Context::default()),
                 expect_value_callback(tx.clone(), 1, TxnStatus::committed(ts)),
             )
             .unwrap();
@@ -5410,7 +5442,7 @@ mod tests {
         rx.recv().unwrap();
         storage
             .sched_txn_command(
-                commands::Commit::new(vec![k.clone()], ts, *ts.incr(), Context::default()),
+                commands::Commit::new(vec![k.clone()], ts, *ts.incr(), vec![], Context::default()),
                 expect_value_callback(tx, 3, TxnStatus::committed(ts)),
             )
             .unwrap();
@@ -5462,6 +5494,7 @@ mod tests {
                     vec![Key::from_raw(b"k")],
                     ts,
                     *ts.incr(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_value_callback(tx.clone(), 1, TxnStatus::committed(ts)),
@@ -5537,7 +5570,13 @@ mod tests {
         ctx.set_priority(CommandPri::High);
         storage
             .sched_txn_command(
-                commands::Commit::new(vec![Key::from_raw(b"x")], 100.into(), 101.into(), ctx),
+                commands::Commit::new(
+                    vec![Key::from_raw(b"x")],
+                    100.into(),
+                    101.into(),
+                    vec![],
+                    ctx,
+                ),
                 expect_ok_callback(tx, 2),
             )
             .unwrap();
@@ -5592,6 +5631,7 @@ mod tests {
                     vec![Key::from_raw(b"x")],
                     100.into(),
                     101.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_ok_callback(tx.clone(), 2),
@@ -5649,6 +5689,7 @@ mod tests {
                     ],
                     100.into(),
                     101.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_ok_callback(tx.clone(), 1),
@@ -8099,7 +8140,13 @@ mod tests {
 
         storage
             .sched_txn_command(
-                commands::Commit::new(vec![k.clone()], ts(10, 0), ts(20, 0), Context::default()),
+                commands::Commit::new(
+                    vec![k.clone()],
+                    ts(10, 0),
+                    ts(20, 0),
+                    vec![],
+                    Context::default(),
+                ),
                 expect_ok_callback(tx.clone(), 0),
             )
             .unwrap();
@@ -8158,7 +8205,7 @@ mod tests {
 
         storage
             .sched_txn_command(
-                commands::Commit::new(vec![k], ts(25, 0), ts(28, 0), Context::default()),
+                commands::Commit::new(vec![k], ts(25, 0), ts(28, 0), vec![], Context::default()),
                 expect_fail_callback(tx, 0, |e| match e {
                     Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(mvcc::Error(
                         box mvcc::ErrorInner::TxnLockNotFound { .. },
@@ -8236,7 +8283,13 @@ mod tests {
 
         storage
             .sched_txn_command(
-                commands::Commit::new(vec![k1.clone()], 10.into(), 20.into(), Context::default()),
+                commands::Commit::new(
+                    vec![k1.clone()],
+                    10.into(),
+                    20.into(),
+                    vec![],
+                    Context::default(),
+                ),
                 expect_ok_callback(tx.clone(), 0),
             )
             .unwrap();
@@ -8447,6 +8500,7 @@ mod tests {
                     vec![key.clone(), key2.clone()],
                     10.into(),
                     20.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_ok_callback(tx.clone(), 0),
@@ -8567,6 +8621,7 @@ mod tests {
                         vec![Key::from_raw(&key(1))],
                         10.into(),
                         20.into(),
+                        vec![],
                         Context::default(),
                     ),
                     expect_ok_callback(tx.clone(), 0),
@@ -8601,6 +8656,7 @@ mod tests {
                         vec![Key::from_raw(&key(2))],
                         30.into(),
                         40.into(),
+                        vec![],
                         Context::default(),
                     ),
                     expect_ok_callback(tx.clone(), 0),
@@ -8855,6 +8911,7 @@ mod tests {
                         vec![Key::from_raw(&key(4))],
                         30.into(),
                         40.into(),
+                        vec![],
                         Context::default(),
                     ),
                     expect_ok_callback(tx.clone(), 0),
@@ -8920,6 +8977,7 @@ mod tests {
                         vec![Key::from_raw(&key(6))],
                         10.into(),
                         20.into(),
+                        vec![],
                         Context::default(),
                     ),
                     expect_ok_callback(tx.clone(), 0),
@@ -9338,7 +9396,13 @@ mod tests {
         let h = lock_blocked(&keys, 15, 10, 20);
         storage
             .sched_txn_command(
-                commands::Commit::new(keys.clone(), 10.into(), 20.into(), Context::default()),
+                commands::Commit::new(
+                    keys.clone(),
+                    10.into(),
+                    20.into(),
+                    vec![],
+                    Context::default(),
+                ),
                 expect_ok_callback(tx.clone(), 0),
             )
             .unwrap();
@@ -10221,6 +10285,7 @@ mod tests {
                     vec![Key::from_raw(b"k1")],
                     10.into(),
                     20.into(),
+                    vec![],
                     Context::default(),
                 ),
                 expect_ok_callback(tx.clone(), 0),
@@ -10868,5 +10933,74 @@ mod tests {
             .unwrap();
         // Prewrite still succeeds
         rx.recv().unwrap().unwrap();
+    }
+
+    #[test]
+    fn test_commit_with_range_hint() {
+        let storage = TestStorageBuilderApiV1::new(MockLockManager::new())
+            .build()
+            .unwrap();
+
+        let pk = b"k0";
+
+        let (tx, rx) = channel();
+
+        let (mut lower, mut upper) = (
+            std::str::from_utf8(pk).unwrap().to_owned(),
+            std::str::from_utf8(pk).unwrap().to_owned(),
+        );
+
+        for i in 0..1000 {
+            let key = format!("k{}", i);
+            let val = format!("v{}", i);
+            if key.cmp(&lower) == std::cmp::Ordering::Less {
+                lower = key.clone();
+            }
+            if key.cmp(&upper) == std::cmp::Ordering::Greater {
+                upper = key.clone();
+            }
+            storage
+                .sched_txn_command(
+                    commands::Prewrite::new(
+                        vec![Mutation::make_put(
+                            Key::from_raw(key.as_bytes()),
+                            val.as_bytes().to_vec(),
+                        )],
+                        pk.to_vec(),
+                        100.into(),
+                        123,
+                        false,
+                        3,
+                        TimeStamp::default(),
+                        TimeStamp::default(),
+                        None,
+                        false,
+                        AssertionLevel::Off,
+                        Context::default(),
+                    ),
+                    expect_ok_callback(tx.clone(), 0),
+                )
+                .unwrap();
+            rx.recv().unwrap();
+        }
+
+        storage
+            .sched_txn_command(
+                commands::Commit::new(
+                    vec![],
+                    100.into(),
+                    200.into(),
+                    vec![
+                        Key::from_raw(lower.as_bytes()),
+                        Key::from_raw(upper.as_bytes()),
+                    ],
+                    Context::default(),
+                ),
+                expect_ok_callback(tx.clone(), 0),
+            )
+            .unwrap();
+        rx.recv().unwrap();
+
+        must_no_locks(&storage, 300, lower.as_bytes(), upper.as_bytes());
     }
 }

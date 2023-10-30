@@ -2,7 +2,6 @@
 
 // #[PerformanceCriticalPath]
 use txn_types::Key;
-use engine_traits::{IterOptions, CF_LOCK};
 
 use crate::storage::{
     kv::WriteData,
@@ -10,12 +9,12 @@ use crate::storage::{
     mvcc::{MvccTxn, SnapshotReader},
     txn::{
         commands::{
-            Command, CommandExt, ReaderWithStats, ReleasedLocks, ResponsePolicy, TypedCommand,
-            WriteCommand, WriteContext, WriteResult,
+            Command, CommandExt, ReadCommand, ReaderWithStats, ReleasedLocks, ResponsePolicy,
+            TypedCommand, WriteCommand, WriteContext, WriteResult,
         },
-        commit, Error, ErrorInner, Result,
+        commit, Error, ErrorInner, ProcessResult, Result,
     },
-    ProcessResult, Snapshot, TxnStatus,
+    Snapshot, Statistics, TxnStatus,
 };
 
 command! {
@@ -44,10 +43,44 @@ impl CommandExt for Commit {
     ts!(commit_ts);
     write_bytes!(keys: multiple);
     gen_lock!(keys: multiple);
+
+    fn readonly(&self) -> bool {
+        self.keys.len() == 0 && self.bound.len() == 2
+    }
+}
+
+impl<S: Snapshot> ReadCommand<S> for Commit {
+    fn process_read(self, snapshot: S, statistics: &mut Statistics) -> Result<ProcessResult> {
+        if self.keys.len() != 0 || self.bound.len() != 2 {
+            unreachable!();
+        }
+
+        let mut reader = SnapshotReader::new_with_ctx(self.lock_ts, snapshot, &self.ctx);
+        let keys = reader.load_lock_keys(&self.bound[0], &self.bound[1], self.lock_ts)?;
+        statistics.add(&reader.take_statistics());
+        let execution_duration_limit = if self.ctx.max_execution_duration_ms == 0 {
+            crate::storage::txn::scheduler::DEFAULT_EXECUTION_DURATION_LIMIT
+        } else {
+            ::std::time::Duration::from_millis(self.ctx.max_execution_duration_ms)
+        };
+        let deadline = ::tikv_util::deadline::Deadline::from_now(execution_duration_limit);
+        println!("generate self.keys: {}", keys.len());
+        return Ok(ProcessResult::NextCommand {
+            cmd: Command::Commit(Commit {
+                ctx: self.ctx,
+                deadline,
+                keys,
+                lock_ts: self.lock_ts,
+                commit_ts: self.commit_ts,
+                bound: vec![],
+            }),
+        });
+    }
 }
 
 impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for Commit {
     fn process_write(self, snapshot: S, context: WriteContext<'_, L>) -> Result<WriteResult> {
+        println!("process commit with keys: {}", self.keys.len());
         if self.commit_ts <= self.lock_ts {
             return Err(Error::from(ErrorInner::InvalidTxnTso {
                 start_ts: self.lock_ts,
@@ -60,20 +93,11 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for Commit {
             context.statistics,
         );
 
-        let mut keys = self.keys;
-        let mut rows = self.keys.len();
-        if rows == 0 && self.bound.len() == 2 {
-            keys = reader.load_lock_keys(
-                &self.bound[0],
-                &self.bound[1],
-                self.lock_ts,
-            )?;
-            rows = keys.len();
-        }
+        let rows = self.keys.len();
 
         // Pessimistic txn needs key_hashes to wake up waiters
         let mut released_locks = ReleasedLocks::new();
-        for k in keys {
+        for k in self.keys {
             released_locks.push(commit(&mut txn, &mut reader, k, self.commit_ts)?);
         }
 

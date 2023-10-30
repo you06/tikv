@@ -673,6 +673,7 @@ impl Command {
             Command::MvccByKey(t) => t.process_read(snapshot, statistics),
             Command::MvccByStartTs(t) => t.process_read(snapshot, statistics),
             Command::FlashbackToVersionReadPhase(t) => t.process_read(snapshot, statistics),
+            Command::Commit(t) => t.process_read(snapshot, statistics),
             _ => panic!("unsupported read command"),
         }
     }
@@ -975,6 +976,7 @@ pub mod test_util {
             keys,
             TimeStamp::from(lock_ts),
             TimeStamp::from(commit_ts),
+            vec![],
             ctx,
         );
 
