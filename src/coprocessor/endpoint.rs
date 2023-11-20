@@ -197,6 +197,8 @@ impl<E: Engine> Endpoint<E> {
                     ReqTag::index
                 };
 
+                let raw_max_execution_timeout = context.get_max_execution_duration_ms();
+
                 req_ctx = ReqContext::new(
                     tag,
                     context,
@@ -243,7 +245,7 @@ impl<E: Engine> Endpoint<E> {
                         paging_size,
                         quota_limiter,
                     );
-                    bb.raw_max_execution_ms = Some(req.get_context().get_max_execution_duration_ms());
+                    bb.raw_max_execution_ms = Some(raw_max_execution_timeout);
                     bb.data_version(data_version)
                         .build()
                 });

@@ -119,7 +119,7 @@ impl BatchDagHandler {
     }
 
     pub fn set_raw_max_execution_ms(&mut self, raw_max_execution_ms: Option<u64>) {
-        if set_max_execution_ms.is_some() {
+        if raw_max_execution_ms.is_some() {
             self.runner.raw_max_execution_ms = raw_max_execution_ms;
         }
     }
