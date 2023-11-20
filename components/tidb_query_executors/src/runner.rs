@@ -77,6 +77,8 @@ pub struct BatchExecutorsRunner<SS> {
     paging_size: Option<u64>,
 
     quota_limiter: Arc<QuotaLimiter>,
+
+    pub raw_max_execution_ms: Option<u64>,
 }
 
 // We assign a dummy type `()` so that we can omit the type when calling
@@ -420,6 +422,8 @@ impl<SS: 'static> BatchExecutorsRunner<SS> {
 
         let exec_stats = ExecuteStats::new(executors_len);
 
+        let raw_max_execution_ms = None;
+
         Ok(Self {
             deadline,
             out_most_executor,
@@ -431,6 +435,7 @@ impl<SS: 'static> BatchExecutorsRunner<SS> {
             encode_type,
             paging_size,
             quota_limiter,
+            raw_max_execution_ms,
         })
     }
 
@@ -452,7 +457,13 @@ impl<SS: 'static> BatchExecutorsRunner<SS> {
         let mut warnings = self.config.new_eval_warnings();
         let mut ctx = EvalContext::new(self.config.clone());
         let mut record_all = 0;
-
+        self.raw_max_execution_ms.map(|max_execution_ms| {
+            let now = tikv_util::time::Instant::now_coarse();
+            let timeout = self.deadline.inner()
+                .checked_sub(now)
+                .map(|d| d.as_millis());
+            tikv_util::info!("DBG handle request"; "timeout" => ?timeout, "input timeout" => ?max_execution_ms);
+        });
         loop {
             let mut chunk = Chunk::default();
             let mut sample = self.quota_limiter.new_sample(true);

@@ -29,6 +29,7 @@ pub struct DagHandlerBuilder<S: Store + 'static> {
     is_cache_enabled: bool,
     paging_size: Option<u64>,
     quota_limiter: Arc<QuotaLimiter>,
+    pub raw_max_execution_ms: Option<u64>,
 }
 
 impl<S: Store + 'static> DagHandlerBuilder<S> {
@@ -43,6 +44,7 @@ impl<S: Store + 'static> DagHandlerBuilder<S> {
         paging_size: Option<u64>,
         quota_limiter: Arc<QuotaLimiter>,
     ) -> Self {
+        let raw_max_execution_ms = None;
         DagHandlerBuilder {
             req,
             ranges,
@@ -54,6 +56,7 @@ impl<S: Store + 'static> DagHandlerBuilder<S> {
             is_cache_enabled,
             paging_size,
             quota_limiter,
+            raw_max_execution_ms,
         }
     }
 
@@ -65,7 +68,7 @@ impl<S: Store + 'static> DagHandlerBuilder<S> {
 
     pub fn build(self) -> Result<Box<dyn RequestHandler>> {
         COPR_DAG_REQ_COUNT.with_label_values(&["batch"]).inc();
-        Ok(BatchDagHandler::new(
+        let mut h = BatchDagHandler::new(
             self.req,
             self.ranges,
             self.store,
@@ -76,8 +79,9 @@ impl<S: Store + 'static> DagHandlerBuilder<S> {
             self.is_streaming,
             self.paging_size,
             self.quota_limiter,
-        )?
-        .into_boxed())
+        )?;
+        h.set_raw_max_execution_ms(self.raw_max_execution_ms);
+        Ok(h.into_boxed())
     }
 }
 
@@ -112,6 +116,12 @@ impl BatchDagHandler {
             )?,
             data_version,
         })
+    }
+
+    pub fn set_raw_max_execution_ms(&mut self, raw_max_execution_ms: Option<u64>) {
+        if set_max_execution_ms.is_some() {
+            self.runner.raw_max_execution_ms = raw_max_execution_ms;
+        }
     }
 }
 

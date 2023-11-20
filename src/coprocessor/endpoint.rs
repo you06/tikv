@@ -232,7 +232,7 @@ impl<E: Engine> Endpoint<E> {
                         0 => None,
                         i => Some(i),
                     };
-                    dag::DagHandlerBuilder::new(
+                    let mut bb = dag::DagHandlerBuilder::new(
                         dag,
                         req_ctx.ranges.clone(),
                         store,
@@ -242,9 +242,10 @@ impl<E: Engine> Endpoint<E> {
                         req.get_is_cache_enabled(),
                         paging_size,
                         quota_limiter,
-                    )
-                    .data_version(data_version)
-                    .build()
+                    );
+                    bb.raw_max_execution_ms = Some(req.get_context().get_max_execution_duration_ms());
+                    bb.data_version(data_version)
+                        .build()
                 });
             }
             REQ_TYPE_ANALYZE => {
