@@ -2933,7 +2933,7 @@ dependencies = [
 [[package]]
 name = "kvproto"
 version = "0.0.2"
-source = "git+https://github.com/you06/kvproto?branch=experimental/parallel-dml#50362d2bb0d49e5926bbbf58da17058aa605f5c7"
+source = "git+https://github.com/you06/kvproto?branch=experimental/parallel-dml#f6e0de3d7b157c47d667d10e847e8a969f41958c"
 dependencies = [
  "futures 0.3.15",
  "grpcio",
