@@ -1702,6 +1702,38 @@ mod latest_kv_tests {
         assert_le!(stats.write.next, 1 + SEEK_BOUND as usize); // skip k2@6, near_seek to k4 (8 times next)
         assert_eq!(stats.write.seek, 2); // seek k4, k4@7
     }
+
+
+    #[test]
+    fn test_skip_pipelined_lock() {
+        // in pipelined dml, the lock may be flushed during execution, those locks should be skipped when read.
+        let mut engine = TestEngineBuilder::new().build().unwrap();
+
+        must_prewrite_put(&mut engine, b"k1", b"v1", b"k1", 1);
+        must_prewrite_put(&mut engine, b"k3", b"v3", b"k1", 1);
+        must_commit(&mut engine, b"k1", 1, 2);
+        must_commit(&mut engine, b"k3", 1, 2);
+        // may change to must_flush_put?
+        must_prewrite_put(&mut engine, b"k2", b"v2", b"k2", 3);
+
+        let expects = vec![
+            (b"k1", b"v1"),
+            (b"k3", b"v3"),
+        ];
+
+        let snapshot = engine.snapshot(Default::default()).unwrap();
+        let mut scanner = ScannerBuilder::new(snapshot, 3.into())
+            .range(None, None)
+            .isolation_level(IsolationLevel::Si)
+            .build()
+            .unwrap();
+        for expect in expects {
+            assert_eq!(
+                scanner.next().unwrap(),
+                Some((Key::from_raw(expect.0), expect.1.to_vec()))
+            );
+        }
+    }
 }
 
 #[cfg(test)]

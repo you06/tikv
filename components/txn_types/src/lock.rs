@@ -433,6 +433,10 @@ impl Lock {
             return Ok(());
         }
 
+        if lock.txn_size == 0 && lock.ts == ts {
+            return Ok(());
+        }
+
         if lock.min_commit_ts > ts {
             // Ignore lock when min_commit_ts > ts
             return Ok(());
