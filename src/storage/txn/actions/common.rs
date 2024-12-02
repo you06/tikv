@@ -22,10 +22,15 @@ pub fn next_last_change_info<S: Snapshot>(
                 LastChange::Exist {
                     last_change_ts,
                     estimated_versions_to_last_change,
-                } => Ok(LastChange::make_exist(
-                    *last_change_ts,
-                    estimated_versions_to_last_change + 1,
-                )),
+                } => {
+                    if last_change_ts.is_zero() {
+                        error!("invalid last_change_ts"; "key" => %key, "write_type" => ?write.write_type);
+                    }
+                    Ok(LastChange::make_exist(
+                        *last_change_ts,
+                        estimated_versions_to_last_change + 1,
+                    ))
+                },
                 LastChange::NotExist => Ok(LastChange::NotExist),
                 LastChange::Unknown => {
                     fail_point!("before_get_write_in_next_last_change_info");
