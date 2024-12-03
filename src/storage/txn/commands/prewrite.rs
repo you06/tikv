@@ -538,12 +538,18 @@ impl<K: PrewriteKind> Prewriter<K> {
             SnapshotReader::new_with_ctx(self.start_ts, snapshot, &self.ctx),
             context.statistics,
         );
+
         // Set extra op here for getting the write record when check write conflict in
         // prewrite.
 
         let rows = self.mutations.len();
         let res = self.prewrite(&mut txn, &mut reader, context.extra_op);
         let (locks, final_min_commit_ts) = res?;
+
+        if txn.start_ts.is_zero() {
+            let sample_key = txn.modifies.first();
+            warn!("prewrite with zero start_ts"; "ts" => %txn.start_ts, "sample_key" => ?sample_key);
+        }
 
         Ok(self.write_result(
             locks,

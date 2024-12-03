@@ -58,7 +58,7 @@ impl<'a, S: Snapshot> Gc<'a, S> {
     fn next_write(&mut self) -> MvccResult<Option<(TimeStamp, Write)>> {
         let result = self.reader.seek_write(&self.key, self.cur_ts)?;
         if let Some((commit, _)) = result {
-            if self.cur_ts.is_zero() {
+            if commit.is_zero() {
                 error!("invalid cur_ts"; "cur_ts" => self.cur_ts, "key" => %self.key);
             }
             self.cur_ts = commit.prev();
