@@ -77,6 +77,10 @@ pub struct ConcurrencyManager {
     panic_on_invalid_max_ts: Arc<AtomicBool>,
 }
 
+pub trait ValueDisplay: slog::Value + Display {}
+
+impl<T> ValueDisplay for T where T: slog::Value + Display {}
+
 impl ConcurrencyManager {
     pub fn new(latest_ts: TimeStamp) -> Self {
         Self::new_with_config(latest_ts, DEFAULT_LIMIT_VALID_DURATION, true)
@@ -145,6 +149,47 @@ impl ConcurrencyManager {
 
                 if new_ts > approximate_limit.into_inner() {
                     self.report_error(new_ts, approximate_limit, source, false)?;
+                }
+            }
+        }
+
+        MAX_TS_GAUGE.set(self.max_ts.fetch_max(new_ts, Ordering::SeqCst).max(new_ts) as i64);
+        Ok(())
+    }
+
+    pub fn update_max_ts_lazy<V>(
+        &self,
+        new_ts: TimeStamp,
+        source_fn: impl FnOnce() -> V,
+    ) -> Result<(), InvalidMaxTsUpdate> where V: ValueDisplay {
+        if new_ts.is_max() {
+            return Ok(());
+        }
+        let new_ts = new_ts.into_inner();
+        let limit = self.max_ts_limit.load(Ordering::SeqCst);
+
+        // check that new_ts is less than or equal to the limit
+        if limit > 0 && new_ts > limit {
+            let last_update = self.last_update_limit_instant.load(Ordering::SeqCst);
+            let now = self.start_instant.saturating_elapsed().as_millis() as u64;
+            assert!(now >= last_update);
+            let duration_to_last_limit_update_ms = now - last_update;
+
+            if duration_to_last_limit_update_ms < self.limit_valid_duration.as_millis() as u64 {
+                // limit is valid
+                self.report_error(new_ts, TimeStamp::new(limit), source_fn(), true)?;
+            } else {
+                // limit is stale
+                // use an approximate limit to avoid false alerts caused by failed limit updates
+
+                let limit = TimeStamp::new(limit);
+                let approximate_limit = TimeStamp::compose(
+                    limit.physical() + duration_to_last_limit_update_ms,
+                    limit.logical(),
+                );
+
+                if new_ts > approximate_limit.into_inner() {
+                    self.report_error(new_ts, approximate_limit, source_fn(), false)?;
                 }
             }
         }
