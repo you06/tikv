@@ -18,51 +18,67 @@ fn benchmark_update_max_ts(c: &mut Criterion) {
     c.bench_function("update_max_ts_valid", |b| {
         b.iter(|| {
             // let _ = cm.update_max_ts(black_box(new_ts), "benchmark");
-            let _ = cm.update_max_ts(black_box(valid_new_ts), format!("benchmark-{}", valid_new_ts));
+            let _ = cm.update_max_ts(
+                black_box(valid_new_ts),
+                format!("benchmark-{}", valid_new_ts),
+            );
         })
     });
 
     c.bench_function("update_max_ts_valid_args", |b| {
         b.iter(|| {
-            let _ = cm.update_max_ts(black_box(valid_new_ts), format_args!("benchmark-{}", invalid_new_ts));
+            let _ = cm.update_max_ts(
+                black_box(valid_new_ts),
+                format_args!("benchmark-{}", invalid_new_ts),
+            );
         })
     });
 
     c.bench_function("update_max_ts_invalid", |b| {
         b.iter(|| {
-            let _ = cm.update_max_ts(black_box(invalid_new_ts), format!("benchmark-{}", invalid_new_ts));
+            let _ = cm.update_max_ts(
+                black_box(invalid_new_ts),
+                format!("benchmark-{}", invalid_new_ts),
+            );
         })
     });
 
     c.bench_function("update_max_ts_invalid_args", |b| {
         b.iter(|| {
-            let _ = cm.update_max_ts(black_box(invalid_new_ts), format_args!("benchmark-{}", invalid_new_ts));
+            let _ = cm.update_max_ts(
+                black_box(invalid_new_ts),
+                format_args!("benchmark-{}", invalid_new_ts),
+            );
         })
     });
 
     // lazy
     c.bench_function("update_max_ts_lazy_valid", |b| {
         b.iter(|| {
-            let _ = cm.update_max_ts_lazy(black_box(valid_new_ts), || format!("benchmark-{}", valid_new_ts));
+            let _ = cm.update_max_ts_lazy(black_box(valid_new_ts), || {
+                format!("benchmark-{}", valid_new_ts)
+            });
         })
     });
 
     // c.bench_function("update_max_ts_lazy_valid_args", |b| {
     //     b.iter(|| {
-    //         let _ = cm.update_max_ts_lazy(black_box(valid_new_ts), || format_args!("benchmark-{}", valid_new_ts));
-    //     })
+    //         let _ = cm.update_max_ts_lazy(black_box(valid_new_ts), ||
+    // format_args!("benchmark-{}", valid_new_ts));     })
     // });
 
     c.bench_function("update_max_ts_lazy_invalid", |b| {
         b.iter(|| {
-            let _ = cm.update_max_ts_lazy(black_box(invalid_new_ts), || format!("benchmark-{}", invalid_new_ts));
+            let _ = cm.update_max_ts_lazy(black_box(invalid_new_ts), || {
+                format!("benchmark-{}", invalid_new_ts)
+            });
         })
     });
 
     // c.bench_function("update_max_ts_lazy_invalid", |b| {
     //     b.iter(|| {
-    //         let _ = cm.update_max_ts_lazy(black_box(invalid_new_ts), || format_args!("benchmark-{}", invalid_new_ts));
-    //     })
+    //         let _ = cm.update_max_ts_lazy(black_box(invalid_new_ts), ||
+    // format_args!("benchmark-{}", invalid_new_ts));     })
     // });
 }
 

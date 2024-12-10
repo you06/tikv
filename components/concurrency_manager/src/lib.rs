@@ -19,7 +19,7 @@ use std::{
     fmt::Display,
     mem::MaybeUninit,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -55,6 +55,24 @@ const DEFAULT_LIMIT_VALID_DURATION: Duration = Duration::from_secs(60);
 //    between TiKV and PD.
 pub const LIMIT_VALID_TIME_MULTIPLIER: u64 = 3;
 
+struct LimitTS {
+    ts: TimeStamp,
+    elapsed: u64,
+}
+
+impl LimitTS {
+    fn default() -> Self {
+        LimitTS {
+            ts: TimeStamp::default(),
+            elapsed: 0,
+        }
+    }
+
+    fn box_new(ts: TimeStamp, elapsed: u64) -> Box<Self> {
+        Box::new(Self { ts, elapsed })
+    }
+}
+
 // Pay attention that the async functions of ConcurrencyManager should not hold
 // the mutex.
 #[derive(Clone)]
@@ -71,6 +89,7 @@ pub struct ConcurrencyManager {
     // check the limit, to avoid blocking the max_ts update caused by temporary issues in
     // fetching TSO, e.g. network partition between this TiKV and PD leader
     last_update_limit_instant: Arc<AtomicU64>,
+    limit_ts: Arc<AtomicPtr<LimitTS>>,
     start_instant: Instant,
     limit_valid_duration: Duration,
 
@@ -97,6 +116,7 @@ impl ConcurrencyManager {
             lock_table: LockTable::default(),
             panic_on_invalid_max_ts: Arc::new(AtomicBool::new(panic_on_invalid_max_ts)),
             last_update_limit_instant: Arc::new(AtomicU64::new(0)),
+            limit_ts: Arc::new(AtomicPtr::new(Box::into_raw(Box::new(LimitTS::default())))),
             limit_valid_duration,
             start_instant: Instant::now_coarse(),
         }
@@ -124,12 +144,13 @@ impl ConcurrencyManager {
         if new_ts == TimeStamp::max() {
             return Ok(());
         }
+        let lm = unsafe { self.limit_ts.load(Ordering::SeqCst).as_ref() }.unwrap();
         let new_ts = new_ts.into_inner();
-        let limit = self.max_ts_limit.load(Ordering::SeqCst);
+        let limit = lm.ts.into_inner();
 
         // check that new_ts is less than or equal to the limit
         if limit > 0 && new_ts > limit {
-            let last_update = self.last_update_limit_instant.load(Ordering::SeqCst);
+            let last_update = lm.elapsed;
             let now = self.start_instant.saturating_elapsed().as_millis() as u64;
             assert!(now >= last_update);
             let duration_to_last_limit_update_ms = now - last_update;
@@ -161,16 +182,20 @@ impl ConcurrencyManager {
         &self,
         new_ts: TimeStamp,
         source_fn: impl FnOnce() -> V,
-    ) -> Result<(), InvalidMaxTsUpdate> where V: ValueDisplay {
+    ) -> Result<(), InvalidMaxTsUpdate>
+    where
+        V: ValueDisplay,
+    {
         if new_ts.is_max() {
             return Ok(());
         }
+        let lm = unsafe { self.limit_ts.load(Ordering::SeqCst).as_ref() }.unwrap();
         let new_ts = new_ts.into_inner();
-        let limit = self.max_ts_limit.load(Ordering::SeqCst);
+        let limit = lm.ts.into_inner();
 
         // check that new_ts is less than or equal to the limit
         if limit > 0 && new_ts > limit {
-            let last_update = self.last_update_limit_instant.load(Ordering::SeqCst);
+            let last_update = lm.elapsed;
             let now = self.start_instant.saturating_elapsed().as_millis() as u64;
             assert!(now >= last_update);
             let duration_to_last_limit_update_ms = now - last_update;
@@ -235,14 +260,21 @@ impl ConcurrencyManager {
     /// have no effect and return silently.
     pub fn set_max_ts_limit(&self, limit: TimeStamp) {
         let ts = limit.into_inner();
-        let current_limit = self.max_ts_limit.load(Ordering::SeqCst);
-        if ts > current_limit {
-            self.max_ts_limit.store(ts, Ordering::SeqCst);
-            self.last_update_limit_instant.store(
-                self.start_instant.saturating_elapsed().as_millis() as u64,
+        let elapsed = self.start_instant.saturating_elapsed().as_millis() as u64;
+        let mut current_lm = self.limit_ts.load(Ordering::SeqCst);
+        while ts > unsafe { current_lm.as_ref().unwrap().ts.into_inner() } {
+            match self.limit_ts.compare_exchange(
+                current_lm,
+                Box::into_raw(LimitTS::box_new(limit, elapsed)),
                 Ordering::SeqCst,
-            );
-            MAX_TS_LIMIT_GAUGE.set(ts as i64);
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    MAX_TS_LIMIT_GAUGE.set(ts as i64);
+                    return;
+                }
+                Err(l) => current_lm = l,
+            }
         }
     }
 
