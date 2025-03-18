@@ -174,6 +174,12 @@ impl<S: Snapshot> PointGetter<S> {
             // Check locks that signal concurrent writes for `Si` or more recent writes for
             // `RcCheckTs`.
             if let Some(lock) = self.load_and_check_lock(user_key)? {
+                warn!(
+                    "DBG point_getter_get: lock found";
+                    "key" => ?user_key,
+                    "lock" => ?lock,
+                    "read_ts" => self.ts,
+                );
                 return self.load_data_from_lock(user_key, lock);
             }
         }

@@ -27,6 +27,7 @@ use tikv_util::{
     lru::LruCache,
     store::find_peer_by_id,
     time::{monotonic_raw_now, ThreadReadId},
+    warn,
 };
 use time::Timespec;
 use tracker::GLOBAL_TRACKERS;
@@ -947,7 +948,18 @@ where
     }
 
     fn redirect(&mut self, mut cmd: RaftCommand<E::Snapshot>) {
-        debug!("localreader redirects command"; "command" => ?cmd);
+        let is_read = cmd.request.get_requests().len() == 1
+            && cmd
+                .request
+                .get_requests()
+                .first()
+                .map(|r| r.get_cmd_type() == CmdType::Snap)
+                .unwrap_or(false);
+        if is_read {
+            warn!("DBG localreader redirects command"; "command" => ?cmd);
+        } else {
+            debug!("localreader redirects command"; "command" => ?cmd);
+        }
         let region_id = cmd.request.get_header().get_region_id();
         let mut err = errorpb::Error::default();
         match ProposalRouter::send(&self.router, cmd) {
@@ -965,6 +977,10 @@ where
                 err.mut_region_not_found().set_region_id(region_id);
                 cmd = c;
             }
+        }
+
+        if is_read {
+            warn!("DBG localreader send meet error"; "error" => ?err);
         }
 
         let mut resp = RaftCmdResponse::default();
@@ -1046,7 +1062,21 @@ where
         mut req: RaftCmdRequest,
         cb: Callback<E::Snapshot>,
     ) {
-        match self.pre_propose_raft_command(&req) {
+        let is_read = req.get_requests().len() == 1
+            && req
+                .get_requests()
+                .first()
+                .map(|r| r.get_cmd_type() == CmdType::Snap)
+                .unwrap_or(false);
+        let pre_propose_result = self.pre_propose_raft_command(&req);
+        if is_read {
+            warn!(
+                "DBG propose read request";
+                "cmd" => ?req,
+                "pre_propose_result" => ?pre_propose_result.as_ref().map(|p| p.as_ref().map(|(_, policy)| policy)),
+            );
+        }
+        match pre_propose_result {
             Ok(Some((mut delegate, policy))) => {
                 let mut snap_updated = false;
                 let last_valid_ts = delegate.last_valid_ts;

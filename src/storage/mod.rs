@@ -825,6 +825,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                     let source = ctx.take_request_source();
                     let region_id = ctx.get_region_id();
                     let peer = ctx.get_peer();
+                    let peer_clone = peer.clone();
 
                     let key = Key::from_raw(req.get_key());
                     tls_collect_query(
@@ -854,6 +855,18 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                         CMD,
                     ) {
                         Ok(mut snap_ctx) => {
+                            warn!("DBG prepare snapshot ctx";
+                                "snap_ctx" => ?snap_ctx,
+                                "region_id" => region_id,
+                                "peer" => ?peer_clone,
+                                "key" => ?key,
+                                "start_ts" => start_ts,
+                                "isolation_level" => ?isolation_level,
+                                "fill_cache" => fill_cache,
+                                "bypass_locks" => ?bypass_locks,
+                                "access_locks" => ?access_locks,
+                                "source" => ?source,
+                                "id" => id);
                             snap_ctx.read_id = if ctx.get_stale_read() {
                                 None
                             } else {
@@ -862,6 +875,18 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                             snap_ctx
                         }
                         Err(e) => {
+                            warn!("DBG prepare snapshot ctx meet error";
+                                "error" => ?e,
+                                "region_id" => region_id,
+                                "peer" => ?peer_clone,
+                                "key" => ?key,
+                                "start_ts" => start_ts,
+                                "isolation_level" => ?isolation_level,
+                                "fill_cache" => fill_cache,
+                                "bypass_locks" => ?bypass_locks,
+                                "access_locks" => ?access_locks,
+                                "source" => ?source,
+                                "id" => id);
                             consumer.consume(id, Err(e), begin_instant, source);
                             continue;
                         }
@@ -908,6 +933,13 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                     set_tls_tracker_token(tracker);
                     match snap_res {
                         Ok(snapshot) => Self::with_perf_context(CMD, || {
+                            warn!(
+                                "DBG wait snapshot ready";
+                                "region_id" => region_id,
+                                "key" => ?key,
+                                "start_ts" => start_ts,
+                                "fill_cache" => fill_cache
+                            );
                             let buckets = snapshot.ext().get_buckets();
                             match PointGetterBuilder::new(snapshot, start_ts)
                                 .fill_cache(fill_cache)
@@ -918,6 +950,13 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                             {
                                 Ok(mut point_getter) => {
                                     let v = point_getter.get(&key);
+                                    warn!(
+                                        "DBG get key result";
+                                        "region_id" => region_id,
+                                        "key" => ?key,
+                                        "start_ts" => start_ts,
+                                        "result" => ?v,
+                                    );
                                     let stat = point_getter.take_statistics();
                                     metrics::tls_collect_read_flow(
                                         region_id,
@@ -946,6 +985,14 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                             }
                         }),
                         Err(e) => {
+                            warn!(
+                                "DBG wait snapshot meet error";
+                                "error" => ?e,
+                                "region_id" => region_id,
+                                "key" => ?key,
+                                "start_ts" => start_ts,
+                                "fill_cache" => fill_cache
+                            );
                             consumer.consume(id, Err(e), begin_instant, source);
                         }
                     }

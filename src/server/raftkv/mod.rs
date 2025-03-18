@@ -603,7 +603,9 @@ where
 
         let mut req = Request::default();
         req.set_cmd_type(CmdType::Snap);
+        let mut has_key_range = false;
         if !ctx.key_ranges.is_empty() && ctx.start_ts.map_or(false, |ts| !ts.is_zero()) {
+            has_key_range = true;
             req.mut_read_index()
                 .set_start_ts(ctx.start_ts.as_ref().unwrap().into_inner());
             req.mut_read_index()
@@ -634,6 +636,9 @@ where
         let mut cmd = RaftCmdRequest::default();
         cmd.set_header(header);
         cmd.set_requests(vec![req].into());
+        if has_key_range {
+            warn!("DBG async_snapshot with key range set"; "cmd" => ?cmd);
+        }
         let tracker = get_tls_tracker_token();
         let store_cb = StoreCallback::read(Box::new(move |resp| {
             let res = on_read_result(resp).map_err(Error::into);
