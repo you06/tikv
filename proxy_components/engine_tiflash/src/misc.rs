@@ -83,7 +83,7 @@ impl RocksEngine {
 
         if let Some(writer) = writer_wrapper {
             writer.finish()?;
-            self.ingest_external_file_cf(cf, &[sst_path.as_str()])?;
+            self.ingest_external_file_cf(cf, &[sst_path.as_str()], None)?;
         } else {
             let mut wb = self.write_batch();
             for key in data.iter() {
@@ -262,7 +262,10 @@ impl MiscExt for RocksEngine {
                     written |= self.delete_all_in_range_cf_by_key(wopts, cf, r)?;
                 }
             }
-            DeleteStrategy::DeleteByWriter { sst_path } => {
+            DeleteStrategy::DeleteByWriter {
+                sst_path,
+                allow_write_during_ingestion,
+            } => {
                 written |= self.delete_all_in_range_cf_by_ingest(wopts, cf, sst_path, ranges)?;
             }
         }
