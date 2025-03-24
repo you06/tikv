@@ -327,7 +327,7 @@ pub fn compare_region_epoch(
     if (check_conf_ver && from_epoch.get_conf_ver() != current_epoch.get_conf_ver())
         || (check_ver && from_epoch.get_version() != current_epoch.get_version())
     {
-        debug!(
+        info!(
             "epoch not match";
             "region_id" => region.get_id(),
             "from_epoch" => ?from_epoch,

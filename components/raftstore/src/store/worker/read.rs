@@ -23,7 +23,7 @@ use kvproto::{
 use pd_client::BucketMeta;
 use tikv_util::{
     codec::number::decode_u64,
-    debug, error,
+    debug, error, info,
     lru::LruCache,
     store::find_peer_by_id,
     time::{monotonic_raw_now, ThreadReadId},
@@ -755,7 +755,7 @@ where
             // The local `ReadDelegate` is up to date
             Some(d) if !d.track_ver.any_new() => Some(d.clone()),
             _ => {
-                debug!("update local read delegate"; "region_id" => region_id);
+                info!("update local read delegate"; "region_id" => region_id);
                 TLS_LOCAL_READ_METRICS.with(|m| m.borrow_mut().reject_reason.cache_miss.inc());
 
                 let (meta_len, meta_reader) = { self.store_meta.get_executor_and_len(region_id) };
@@ -765,7 +765,13 @@ where
                 self.delegates.resize(meta_len);
                 match meta_reader {
                     Some(reader) => {
+                        let region_epoch = reader.region.get_region_epoch();
                         self.delegates.insert(region_id, reader.clone());
+                        info!("insert local read delegate";
+                            "region_id" => region_id,
+                            "region_ver" => region_epoch.get_version(),
+                            "region_conf_ver" => region_epoch.get_conf_ver(),
+                        );
                         Some(reader)
                     }
                     None => None,
@@ -801,6 +807,8 @@ where
             }
         };
 
+        info!("local reader: got delegate from local reader"; "region_id" => region_id, "req_epoch" => ?req.get_header().get_region_epoch(), "delegate_epoch" => ?delegate.region.get_region_epoch());
+
         fail_point!("localreader_on_find_delegate");
 
         // Check peer id.
@@ -811,7 +819,7 @@ where
 
         // Check term.
         if let Err(e) = util::check_term(req.get_header(), delegate.term) {
-            debug!(
+            info!(
                 "check term";
                 "delegate_term" => delegate.term,
                 "header_term" => req.get_header().get_term(),
@@ -825,7 +833,7 @@ where
         if util::check_req_region_epoch(req, &delegate.region, false).is_err() {
             TLS_LOCAL_READ_METRICS.with(|m| m.borrow_mut().reject_reason.epoch.inc());
             // Stale epoch, redirect it to raftstore to get the latest region.
-            debug!("rejected by epoch not match"; "tag" => &delegate.tag);
+            info!("rejected by epoch not match"; "tag" => &delegate.tag);
             return Ok(None);
         }
 
@@ -882,6 +890,19 @@ where
                 _ => unreachable!("{:?}", e),
             };
             return Err(e);
+        }
+
+        let (_, meta_reader) = self.store_meta.get_executor_and_len(region_id);
+        if let Some(meta_reader) = meta_reader {
+            let region_epoch_cache = delegate.region.get_region_epoch();
+            let region_epoch_real = meta_reader.region.get_region_epoch();
+            if region_epoch_cache.get_version() != region_epoch_real.get_version()
+                || region_epoch_cache.get_conf_ver() != region_epoch_real.get_conf_ver()
+            {
+                info!("region delegate is outdate";
+                "cache" => ?region_epoch_cache,
+                "real" => ?region_epoch_real);
+            }
         }
 
         Ok(Some(delegate))
@@ -958,7 +979,7 @@ where
         if is_read {
             warn!("DBG localreader redirects command"; "command" => ?cmd);
         } else {
-            debug!("localreader redirects command"; "command" => ?cmd);
+            info!("localreader redirects command"; "command" => ?cmd);
         }
         let region_id = cmd.request.get_header().get_region_id();
         let mut err = errorpb::Error::default();
@@ -1004,7 +1025,7 @@ where
         snap_updated: &mut bool,
         last_valid_ts: Timespec,
     ) -> Option<ReadResponse<E::Snapshot>> {
-        let mut local_read_ctx = LocalReadContext::new(&mut self.snap_cache, read_id);
+        let mut local_read_ctx = LocalReadContext::new(&mut self.snap_cache, read_id.clone());
 
         (*snap_updated) =
             local_read_ctx.maybe_update_snapshot(delegate.get_tablet(), last_valid_ts);
@@ -1018,9 +1039,23 @@ where
         let mut response = delegate.execute(req, &region, None, Some(local_read_ctx));
         if let Some(snap) = response.snapshot.as_mut() {
             snap.bucket_meta = delegate.bucket_meta.clone();
+            // assert_eq!(
+            //     snap.get_region().get_id(),
+            //     req.get_header().get_region_id(),
+            //     "{:?}",
+            //     req
+            // );
+            // assert_eq!(
+            //     snap.get_region().get_region_epoch(),
+            //     req.get_header().get_region_epoch(),
+            //     "{:?}",
+            //     req
+            // );
         }
         // Try renew lease in advance
         delegate.maybe_renew_lease_advance(&self.router, snapshot_ts);
+        info!("try_local_leader_read success"; "region_id" => region.get_id(), "req_epoch" => ?req.get_header().get_region_epoch(), "response.snapshot.is_some" => response.snapshot.is_some(),
+        "read_id" => ?read_id, "snap_updated" => *snap_updated, "snap_cache" => ?self.snap_cache.snapshot, "engine_type" => std::any::type_name::<E>());
         Some(response)
     }
 

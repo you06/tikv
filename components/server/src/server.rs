@@ -49,11 +49,13 @@ use pd_client::{
     meta_storage::{Checked, Sourced},
     PdClient, RpcClient,
 };
+use raft::StateRole;
 use raft_log_engine::RaftLogEngine;
 use raftstore::{
     coprocessor::{
-        config::SplitCheckConfigManager, BoxConsistencyCheckObserver, ConsistencyCheckMethod,
-        CoprocessorHost, RawConsistencyCheckObserver, RegionInfoAccessor,
+        config::SplitCheckConfigManager, BoxConsistencyCheckObserver, BoxRegionChangeObserver,
+        ConsistencyCheckMethod, Coprocessor, CoprocessorHost, ObserverContext,
+        RawConsistencyCheckObserver, RegionChangeEvent, RegionChangeObserver, RegionInfoAccessor,
     },
     router::{CdcRaftRouter, ServerRaftStoreRouter},
     store::{
@@ -283,6 +285,15 @@ struct Servers<EK: KvEngine, ER: RaftEngine, F: KvFormat> {
 type LocalServer<EK, ER> = Server<resolve::PdStoreAddrResolver, LocalRaftKv<EK, ER>>;
 type LocalRaftKv<EK, ER> = RaftKv<EK, ServerRaftStoreRouter<EK, ER>>;
 
+#[derive(Clone)]
+struct RegionChangeDebugLoggingObserver {}
+impl Coprocessor for RegionChangeDebugLoggingObserver {}
+impl RegionChangeObserver for RegionChangeDebugLoggingObserver {
+    fn on_region_changed(&self, ctx: &mut ObserverContext<'_>, e: RegionChangeEvent, r: StateRole) {
+        info!("observed region state change"; "region" => ?ctx.region(), "event" => ?e, "role" => ?r, "stack_trace" => %std::backtrace::Backtrace::capture());
+    }
+}
+
 impl<ER, F> TikvServer<ER, F>
 where
     ER: RaftEngine,
@@ -375,6 +386,15 @@ where
             router.clone(),
             config.coprocessor.clone(),
         ));
+
+        coprocessor_host
+            .as_mut()
+            .unwrap()
+            .registry
+            .register_region_change_observer(
+                1,
+                BoxRegionChangeObserver::new(RegionChangeDebugLoggingObserver {}),
+            );
 
         let region_info_accessor = RegionInfoAccessor::new(coprocessor_host.as_mut().unwrap());
 
