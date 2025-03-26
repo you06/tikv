@@ -761,7 +761,6 @@ impl<ER: RaftEngine, F: KvFormat> TiKvServer<ER, F> {
 
         // Initialize concurrency manager
         let latest_ts = block_on(pd_client.get_tso()).expect("failed to get timestamp from PD");
-        // FIXME: is this ok to use `new_for_test`?
         let concurrency_manager = ConcurrencyManager::new_for_test(latest_ts);
 
         // use different quota for front-end and back-end requests

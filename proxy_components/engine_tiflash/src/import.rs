@@ -53,8 +53,9 @@ impl ImportExt for RocksEngine {
     }
 
     fn acquire_ingest_latch(&self, range: Range<'_>) -> RangeLatchGuard<'_> {
-        // FIXME: allow for tiflash?
-        panic!("tiflash does not support acquire ingest latch")
+        self.rocks
+            .ingest_latch
+            .acquire(range.start_key.to_vec(), range.end_key.to_vec())
     }
 }
 
@@ -69,8 +70,9 @@ impl IngestExternalFileOptions for RocksIngestExternalFileOptions {
         self.0.move_files(f);
     }
 
-    // FIXME: allow for tiflash?
-    fn allow_write(&mut self, f: bool) {}
+    fn allow_write(&mut self, f: bool) {
+        self.0.set_allow_write(f);
+    }
 }
 
 #[cfg(test)]
