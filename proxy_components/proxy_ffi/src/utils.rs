@@ -1,19 +1,18 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
 use std::{
-    sync::{mpsc},
+    sync::mpsc,
     thread::Builder,
     time::{self},
 };
+
 use futures_util::{compat::Future01CompatExt, future::BoxFuture, FutureExt};
 use lazy_static::lazy_static;
+use tikv_util::{sys::thread::StdThreadBuildWrapper, thd_name, thread_group};
 use tokio_timer::timer::Handle;
-use tikv_util::thd_name;
-use tikv_util::thread_group;
-use tikv_util::sys::thread::StdThreadBuildWrapper;
 
-/// The function has been replaced by `start_timer_thread` which is a private fn.
-/// So we re-implement it here.
+/// The function has been replaced by `start_timer_thread` which is a private
+/// fn. So we re-implement it here.
 pub fn start_global_timer(name: &str) -> Handle {
     let (tx, rx) = mpsc::channel();
     let props = thread_group::current_properties();
