@@ -363,6 +363,44 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
         true
     }
 
+    pub fn on_apply_snapshot_committed(
+        &self,
+        region: &Region,
+        peer_id: u64,
+        snap_key: &store::SnapKey,
+        _: Option<&store::Snapshot>,
+    ) {
+        fail::fail_point!("on_ob_apply_snapshot_committed", |_| {
+            return;
+        });
+        #[allow(unused_mut)]
+        let mut should_check_fap_snapshot = self.packed_envs.engine_store_cfg.enable_unips;
+        #[allow(clippy::redundant_closure_call)]
+        (|| {
+            fail::fail_point!("on_apply_snapshot_committed_allow_no_unips", |_| {
+                // UniPS can't provide a snapshot currently
+                should_check_fap_snapshot = true;
+            });
+        })();
+        #[allow(clippy::collapsible_if)]
+        if should_check_fap_snapshot {
+            if self.engine_store_server_helper.query_fap_snapshot_state(
+                region.get_id(),
+                peer_id,
+                snap_key.idx,
+                snap_key.term,
+            ) == proxy_ffi::interfaces_ffi::FapSnapshotState::Persisted
+            {
+                info!("remove fap snapshot on success";
+                    "peer_id" => peer_id,
+                    "region_id" => region.get_id(),
+                );
+                self.engine_store_server_helper
+                    .clear_fap_snapshot(region.get_id(), 1); // 1 for success
+            }
+        }
+    }
+
     pub fn cancel_apply_snapshot(&self, region_id: u64, peer_id: u64) {
         info!("start cancel apply snapshot";
             "peer_id" => peer_id,
