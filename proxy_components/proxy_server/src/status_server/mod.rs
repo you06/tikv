@@ -76,6 +76,18 @@ static MISSING_ACTIONS: &[u8] = b"Missing param actions";
 #[cfg(feature = "failpoints")]
 static FAIL_POINTS_REQUEST_PATH: &str = "/fail";
 
+use prometheus::{exponential_buckets, register_histogram_vec, HistogramVec};
+
+lazy_static::lazy_static! {
+    pub static ref STATUS_REQUEST_DURATION: HistogramVec = register_histogram_vec!(
+        "tikv_status_server_proxy_request_duration_seconds",
+        "Bucketed histogram of TiKV status server request duration",
+        &["method", "path"],
+        exponential_buckets(0.0001, 2.0, 24).unwrap() // 0.1ms ~ 1677.7s
+    )
+    .unwrap();
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct LogLevelRequest {
@@ -764,7 +776,9 @@ where
                             ));
                         }
 
-                        match (method, path.as_ref()) {
+                        let mut is_unknown_path = false;
+                        let start = Instant::now();
+                        let res = match (method.clone(), path.as_ref()) {
                             (Method::GET, "/metrics") => Ok(Response::new(
                                 dump(cfg_controller.get_current().server.simplify_metrics).into(),
                             )),
@@ -831,11 +845,49 @@ where
                                 Self::handle_http_request(req, engine_store_server_helper).await
                             }
 
-                            _ => Ok(make_response(
-                                StatusCode::NOT_FOUND,
-                                format!("path not found, {:?}", req),
-                            )),
-                        }
+                            _ => {
+                                is_unknown_path = true;
+                                Ok(make_response(
+                                    StatusCode::NOT_FOUND,
+                                    format!("path not found, {:?}", req),
+                                ))
+                            }
+                        };
+                        let path_label = if is_unknown_path {
+                            "unknown".to_owned()
+                        } else {
+                            path
+                        };
+                        const TIFLASH_PREFIXES: &[&str] = &[
+                            "/tiflash/sync-status",
+                            "/tiflash/sync-region",
+                            "/tiflash/sync-schema",
+                            "/tiflash/store-status",
+                            "/tiflash/remote/owner/info",
+                            "/tiflash/remote/owner/resign",
+                            "/tiflash/remote/gc",
+                            "/tiflash/remote/upload",
+                        ];
+
+                        let get_tiflash_prefix = |path: &str| -> Option<&'static str> {
+                            TIFLASH_PREFIXES
+                                .iter()
+                                .find(|&&p| path.starts_with(p))
+                                .copied()
+                        };
+                        match get_tiflash_prefix(method.as_str()) {
+                            None => {
+                                STATUS_REQUEST_DURATION
+                                    .with_label_values(&[method.as_str(), &path_label])
+                                    .observe(start.elapsed().as_secs_f64());
+                            }
+                            Some(s) => {
+                                STATUS_REQUEST_DURATION
+                                    .with_label_values(&[s, &path_label])
+                                    .observe(start.elapsed().as_secs_f64());
+                            }
+                        };
+                        res
                     }
                 }))
             }
