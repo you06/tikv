@@ -346,6 +346,14 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
             .map_err(Error::from)
     }
 
+    /// Get an in-memory snapshot of `engine`.
+    fn async_in_memory_snapshot(
+        engine: &mut E,
+        ctx: SnapContext<'_>,
+    ) -> impl std::future::Future<Output = Result<E::IMSnap>> {
+        kv::in_memory_snapshot(engine, ctx).map_err(Error::from)
+    }
+
     #[cfg(test)]
     pub fn get_snapshot(&mut self) -> E::Snap {
         self.engine.snapshot(Default::default()).unwrap()
@@ -671,8 +679,10 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                     &concurrency_manager,
                     CMD,
                 )?;
-                let snapshot =
-                    Self::with_tls_engine(|engine| Self::snapshot(engine, snap_ctx)).await?;
+                let snapshot = Self::with_tls_engine(|engine| {
+                    Self::async_in_memory_snapshot(engine, snap_ctx)
+                })
+                .await?;
 
                 {
                     deadline.check()?;
@@ -880,7 +890,9 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                         }
                     };
 
-                    let snap = Self::with_tls_engine(|engine| Self::snapshot(engine, snap_ctx));
+                    let snap = Self::with_tls_engine(|engine| {
+                        Self::async_in_memory_snapshot(engine, snap_ctx)
+                    });
                     req_snaps.push((
                         TrackedFuture::new(snap),
                         key,
@@ -1259,8 +1271,10 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                     &concurrency_manager,
                     CMD,
                 )?;
-                let snapshot =
-                    Self::with_tls_engine(|engine| Self::snapshot(engine, snap_ctx)).await?;
+                let snapshot = Self::with_tls_engine(|engine| {
+                    Self::async_in_memory_snapshot(engine, snap_ctx)
+                })
+                .await?;
                 {
                     deadline.check()?;
                     let begin_instant = Instant::now();

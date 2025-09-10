@@ -609,7 +609,7 @@ impl RegionCollector {
                     .get(id)
                     .filter(|ri| {
                         ri.role == StateRole::Leader
-                            && ac.region_stat.cop_detail.iterated_count() != 0
+                            // && ac.region_stat.cop_detail.iterated_count() != 0
                             && !ri.region.is_in_flashback
                     })
                     .map(|ri| (ri, ac))
@@ -649,24 +649,25 @@ impl RegionCollector {
         // Get the average iterated count of the first top 10 regions and use the
         // 1/ITERATED_COUNT_FILTER_FACTOR of it to filter regions with less read
         // flows
-        let top_regions_iterated_count: Vec<_> = top_regions
-            .iter()
-            .map(|(_, r)| r.cop_detail.iterated_count())
-            .take(10)
-            .collect();
-        let iterated_count_to_filter: usize = if !top_regions_iterated_count.is_empty() {
-            top_regions_iterated_count.iter().sum::<usize>()
-                / top_regions_iterated_count.len()
-                / ITERATED_COUNT_FILTER_FACTOR
-        } else {
-            0
-        };
-        top_regions.retain(|(_, s)| {
-            s.cop_detail.iterated_count() >= iterated_count_to_filter
-                // plus processed_keys by 1 to make it not 0
-                && s.cop_detail.mvcc_amplification()
-                    >= (self.mvcc_amplification_threshold)() as f64
-        });
+        // let top_regions_iterated_count: Vec<_> = top_regions
+        //     .iter()
+        //     .map(|(_, r)| r.cop_detail.iterated_count())
+        //     .take(10)
+        //     .collect();
+        // let iterated_count_to_filter: usize = if
+        // !top_regions_iterated_count.is_empty() {
+        //     top_regions_iterated_count.iter().sum::<usize>()
+        //         / top_regions_iterated_count.len()
+        //         / ITERATED_COUNT_FILTER_FACTOR
+        // } else {
+        //     0
+        // };
+        // top_regions.retain(|(_, s)| {
+        //     s.cop_detail.iterated_count() >= iterated_count_to_filter
+        //         // plus processed_keys by 1 to make it not 0
+        //         && s.cop_detail.mvcc_amplification()
+        //             >= (self.mvcc_amplification_threshold)() as f64
+        // });
 
         // TODO(SpadeA): remove it when auto load/evict is stable
         {
