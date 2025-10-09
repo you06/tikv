@@ -612,6 +612,19 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
         key: Key,
         start_ts: TimeStamp,
     ) -> impl Future<Output = Result<(Option<Value>, KvGetStatistics)>> {
+        let trace_id = ctx.get_trace_id().to_owned();
+        if trace_id.len() > 0 {
+            warn!(
+                "Storage::get entry";
+                "key" => %key,
+                "start_ts" => ?start_ts,
+                "region_id" => ctx.get_region_id(),
+                "peer_id" => ctx.get_peer().get_id(),
+                "term" => ctx.get_term(),
+                "trace_id" => &trace_id,
+            );
+        }
+
         let deadline = Self::get_deadline(&ctx);
         const CMD: CommandKind = CommandKind::get;
         let priority = ctx.get_priority();
@@ -774,6 +787,19 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                             schedule_wait_time.as_nanos() as u64;
                     });
                     record_logical_read_bytes(statistics.processed_size as u64);
+
+                    if trace_id.len() > 0 {
+                        warn!(
+                            "Storage::get result";
+                            "key" => %key,
+                            "start_ts" => ?start_ts,
+                            "region_id" => ctx.get_region_id(),
+                            "peer_id" => ctx.get_peer().get_id(),
+                            "term" => ctx.get_term(),
+                            "result" => ?result.as_ref().map(|v| v.as_ref().map(|val| log_wrappers::Value::value(val))),
+                            "trace_id" => &trace_id,
+                        );
+                    }
                     Ok((
                         result?,
                         KvGetStatistics {
