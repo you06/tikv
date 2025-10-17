@@ -3,6 +3,7 @@
 use std::{borrow::Cow, mem::size_of};
 
 use byteorder::ReadBytesExt;
+use collections::HashMap;
 use kvproto::kvrpcpb::{IsolationLevel, LockInfo, Op, WriteConflictReason};
 use tikv_util::{
     codec::{
@@ -24,12 +25,14 @@ pub enum LockType {
     Delete,
     Lock,
     Pessimistic,
+    Shared,
 }
 
 const FLAG_PUT: u8 = b'P';
 const FLAG_DELETE: u8 = b'D';
 const FLAG_LOCK: u8 = b'L';
 const FLAG_PESSIMISTIC: u8 = b'S';
+const FLAG_SHARED: u8 = b'H';
 
 const FOR_UPDATE_TS_PREFIX: u8 = b'f';
 const TXN_SIZE_PREFIX: u8 = b't';
@@ -41,6 +44,7 @@ const TXN_SOURCE_PREFIX: u8 = b's';
 const _RESERVED_PREFIX: u8 = b'T'; // Reserved for future use.
 const PESSIMISTIC_LOCK_WITH_CONFLICT_PREFIX: u8 = b'F';
 const GENERATION_PREFIX: u8 = b'g';
+const SHARED_LOCK_TXNS_INFO_PREFIX: u8 = b'h';
 
 impl LockType {
     pub fn from_mutation(mutation: &Mutation) -> Option<LockType> {
@@ -58,6 +62,7 @@ impl LockType {
             FLAG_DELETE => Some(LockType::Delete),
             FLAG_LOCK => Some(LockType::Lock),
             FLAG_PESSIMISTIC => Some(LockType::Pessimistic),
+            FLAG_SHARED => Some(LockType::Shared),
             _ => None,
         }
     }
@@ -68,6 +73,7 @@ impl LockType {
             LockType::Delete => FLAG_DELETE,
             LockType::Lock => FLAG_LOCK,
             LockType::Pessimistic => FLAG_PESSIMISTIC,
+            LockType::Shared => FLAG_SHARED,
         }
     }
 }
@@ -113,6 +119,10 @@ pub struct Lock {
     pub is_locked_with_conflict: bool,
     /// The generation of the lock, used in pipelined DML.
     pub generation: u64,
+
+    /// Only valid when `lock_type` is `LockType::Shared`, otherwise the value
+    /// is `None`.
+    pub shared_lock_txns_info: Option<SharedLockTxnsInfo>,
 }
 
 impl std::fmt::Debug for Lock {
@@ -140,6 +150,7 @@ impl std::fmt::Debug for Lock {
             .field("txn_source", &self.txn_source)
             .field("is_locked_with_conflict", &self.is_locked_with_conflict)
             .field("generation", &self.generation)
+            .field("shared_lock_txns_info", &self.shared_lock_txns_info)
             .finish()
     }
 }
@@ -150,6 +161,10 @@ impl HeapSize for Lock {
             + self.short_value.approximate_heap_size()
             + self.secondaries.approximate_heap_size()
             + self.rollback_ts.approximate_heap_size()
+            + self
+                .shared_lock_txns_info
+                .as_ref()
+                .map_or(0, HeapSize::approximate_heap_size)
     }
 }
 
@@ -182,7 +197,26 @@ impl Lock {
             txn_source: 0,
             is_locked_with_conflict,
             generation: 0,
+            shared_lock_txns_info: None,
         }
+    }
+
+    pub fn new_in_shared_mode() -> Self {
+        let mut lock = Lock::new(
+            LockType::Shared,
+            Vec::new(),
+            TimeStamp::max(),
+            0,
+            None,
+            TimeStamp::max(),
+            0,
+            TimeStamp::zero(),
+            false,
+        );
+        lock.shared_lock_txns_info = Some(SharedLockTxnsInfo {
+            txn_info_segments: HashMap::default(),
+        });
+        lock
     }
 
     #[must_use]
@@ -216,6 +250,64 @@ impl Lock {
     pub fn with_generation(mut self, generation: u64) -> Self {
         self.generation = generation;
         self
+    }
+
+    pub fn is_shared(&self) -> bool {
+        self.lock_type == LockType::Shared
+    }
+
+    #[cfg(test)]
+    #[inline]
+    #[must_use]
+    pub fn with_shared_lock_txns_info(mut self, info: SharedLockTxnsInfo) -> Self {
+        self.shared_lock_txns_info = Some(info);
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn find_shared_lock_txn(&self, start_ts: TimeStamp) -> Option<&Lock> {
+        self.shared_lock_txns_info
+            .as_ref()
+            .and_then(|info| info.txn_info_segments.get(&start_ts))
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn put_shared_lock(&mut self, lock: Lock) {
+        assert!(self.is_shared());
+        if self
+            .shared_lock_txns_info
+            .as_ref()
+            .unwrap()
+            .txn_info_segments
+            .get(&lock.ts)
+            .is_some()
+        {
+            return;
+        }
+        match lock.lock_type {
+            LockType::Lock => {
+                // Prewriting a shared lock guarantees that no non-shared lock with commit_ts >
+                // lock.ts can exist for this key. Therefore a later shared lock
+                // prewrite with start_ts > lock.ts can skip scanning the write CF.
+                self.ts = std::cmp::min(self.ts, lock.ts);
+            }
+            LockType::Pessimistic => {
+                // Pessimistic locks in a shared lock guarantees that no non-shared lock with
+                // commit_ts > lock.for_update_ts can exist for this key.
+                // Therefore a later shared lock pessimistic with for_update_ts >
+                // lock.for_update_ts can skip scanning the write CF.
+                self.for_update_ts = std::cmp::min(self.for_update_ts, lock.for_update_ts);
+            }
+            _ => unreachable!(),
+        }
+        let ts = lock.ts;
+        self.shared_lock_txns_info
+            .as_mut()
+            .unwrap()
+            .txn_info_segments
+            .insert(ts, lock);
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -275,6 +367,26 @@ impl Lock {
             b.push(GENERATION_PREFIX);
             b.encode_u64(self.generation).unwrap();
         }
+        if let Some(info) = &self.shared_lock_txns_info {
+            debug_assert!(
+                self.lock_type == LockType::Shared,
+                "shared_lock_txns_info should be present on Shared locks"
+            );
+            b.push(SHARED_LOCK_TXNS_INFO_PREFIX);
+            b.encode_var_u64(info.txn_info_segments.len() as u64)
+                .unwrap();
+            let mut segments: Vec<_> = info.txn_info_segments.values().collect();
+            segments.sort_by(|a, b| a.ts.cmp(&b.ts));
+            for seg in segments {
+                let encoded = seg.to_bytes();
+                b.encode_compact_bytes(&encoded).unwrap();
+            }
+        } else {
+            debug_assert!(
+                self.lock_type != LockType::Shared,
+                "shared_lock_txns_info can only be present on Shared locks"
+            );
+        }
         b
     }
 
@@ -319,6 +431,16 @@ impl Lock {
         if self.generation > 0 {
             size += 1 + size_of::<u64>();
         }
+        if let Some(info) = &self.shared_lock_txns_info {
+            size += 1
+                + MAX_VAR_U64_LEN
+                + MAX_VAR_U64_LEN
+                + info
+                    .txn_info_segments
+                    .values()
+                    .map(|lock| MAX_VAR_I64_LEN + lock.pre_allocate_size())
+                    .sum::<usize>();
+        }
         size
     }
 
@@ -361,6 +483,7 @@ impl Lock {
         let mut txn_source = 0;
         let mut is_locked_with_conflict = false;
         let mut generation = 0;
+        let mut shared_lock_txns_info = None;
         while !b.is_empty() {
             match b.read_u8()? {
                 SHORT_VALUE_PREFIX => {
@@ -407,6 +530,18 @@ impl Lock {
                 GENERATION_PREFIX => {
                     generation = number::decode_u64(&mut b)?;
                 }
+                SHARED_LOCK_TXNS_INFO_PREFIX => {
+                    let len = number::decode_var_u64(&mut b)? as usize;
+                    let mut segments = HashMap::default();
+                    for _ in 0..len {
+                        let lock_bytes = bytes::decode_compact_bytes(&mut b)?;
+                        let lock = Lock::parse(&lock_bytes)?;
+                        segments.insert(lock.ts, lock);
+                    }
+                    shared_lock_txns_info = Some(SharedLockTxnsInfo {
+                        txn_info_segments: segments,
+                    });
+                }
                 _ => {
                     // To support forward compatibility, all fields should be serialized in order
                     // and stop parsing if meets an unknown byte.
@@ -435,6 +570,7 @@ impl Lock {
         if use_async_commit {
             lock = lock.use_async_commit(secondaries);
         }
+        lock.shared_lock_txns_info = shared_lock_txns_info;
         Ok(lock)
     }
 
@@ -450,6 +586,7 @@ impl Lock {
             LockType::Delete => Op::Del,
             LockType::Lock => Op::Lock,
             LockType::Pessimistic => Op::PessimisticLock,
+            LockType::Shared => Op::Lock,
         };
         info.set_lock_type(lock_type);
         info.set_lock_for_update_ts(self.for_update_ts.into_inner());
@@ -470,8 +607,12 @@ impl Lock {
         bypass_locks: &TsSet,
         is_replica_read: bool,
     ) -> Result<()> {
-        if lock.ts > ts || lock.lock_type == LockType::Lock || lock.is_pessimistic_lock() {
-            // Ignore lock when lock.ts > ts or lock's type is Lock or Pessimistic
+        if lock.ts > ts
+            || lock.lock_type == LockType::Lock
+            || lock.lock_type == LockType::Shared
+            || lock.is_pessimistic_lock()
+        {
+            // Ignore lock when lock.ts > ts or lock's type is Lock, Shared or Pessimistic
             return Ok(());
         }
 
@@ -518,8 +659,11 @@ impl Lock {
         ts: TimeStamp,
         bypass_locks: &TsSet,
     ) -> Result<()> {
-        if lock.lock_type == LockType::Lock || lock.is_pessimistic_lock() {
-            // Ignore lock when the lock's type is Lock or Pessimistic.
+        if lock.lock_type == LockType::Lock
+            || lock.lock_type == LockType::Shared
+            || lock.is_pessimistic_lock()
+        {
+            // Ignore lock when the lock's type is Lock, Shared or Pessimistic.
             return Ok(());
         }
 
@@ -581,6 +725,17 @@ impl Lock {
 
     pub fn is_pessimistic_lock_with_conflict(&self) -> bool {
         self.is_pessimistic_lock() && self.is_locked_with_conflict
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct SharedLockTxnsInfo {
+    pub txn_info_segments: HashMap<TimeStamp, Lock>,
+}
+
+impl HeapSize for SharedLockTxnsInfo {
+    fn approximate_heap_size(&self) -> usize {
+        self.txn_info_segments.approximate_heap_size()
     }
 }
 
@@ -743,6 +898,12 @@ mod tests {
                 i, flag, lock_type, lt
             );
         }
+
+        let lock_type = LockType::Shared;
+        let f = lock_type.to_u8();
+        assert_eq!(f, FLAG_SHARED);
+        let lt = LockType::from_u8(f).unwrap();
+        assert_eq!(lt, lock_type);
     }
 
     #[test]
@@ -945,6 +1106,49 @@ mod tests {
             .set_last_change(LastChange::make_exist(4.into(), 2))
             .set_txn_source(1)
             .with_generation(10),
+            Lock::new(
+                LockType::Shared,
+                b"shared_pk".to_vec(),
+                321.into(),
+                654,
+                None,
+                TimeStamp::zero(),
+                0,
+                TimeStamp::zero(),
+                false,
+            )
+            .with_shared_lock_txns_info(SharedLockTxnsInfo {
+                txn_info_segments: {
+                    let mut segments = HashMap::default();
+                    let seg1_ts: TimeStamp = 11.into();
+                    let seg1 = Lock::new(
+                        LockType::Put,
+                        b"seg1".to_vec(),
+                        seg1_ts,
+                        22,
+                        None,
+                        TimeStamp::zero(),
+                        0,
+                        TimeStamp::zero(),
+                        false,
+                    );
+                    segments.insert(seg1_ts, seg1);
+                    let seg2_ts: TimeStamp = 33.into();
+                    let seg2 = Lock::new(
+                        LockType::Delete,
+                        b"seg2".to_vec(),
+                        seg2_ts,
+                        44,
+                        Some(b"v".to_vec()),
+                        TimeStamp::zero(),
+                        0,
+                        TimeStamp::zero(),
+                        false,
+                    );
+                    segments.insert(seg2_ts, seg2);
+                    segments
+                },
+            }),
         ];
         for (i, lock) in locks.drain(..).enumerate() {
             let v = lock.to_bytes();
@@ -1214,7 +1418,8 @@ mod tests {
             last_change: Exist { last_change_ts: TimeStamp(80), estimated_versions_to_last_change: 4 }, \
             txn_source: 0, \
             is_locked_with_conflict: false, \
-            generation: 0 \
+            generation: 0, \
+            shared_lock_txns_info: None \
             }"
         );
         log_wrappers::set_redact_info_log(log_wrappers::RedactOption::Flag(true));
@@ -1237,7 +1442,8 @@ mod tests {
             last_change: Exist { last_change_ts: TimeStamp(80), estimated_versions_to_last_change: 4 }, \
             txn_source: 0, \
             is_locked_with_conflict: false, \
-            generation: 0 \
+            generation: 0, \
+            shared_lock_txns_info: None \
             }"
         );
 
@@ -1262,7 +1468,8 @@ mod tests {
             last_change: Exist { last_change_ts: TimeStamp(80), estimated_versions_to_last_change: 4 }, \
             txn_source: 0, \
             is_locked_with_conflict: false, \
-            generation: 0 \
+            generation: 0, \
+            shared_lock_txns_info: None \
             }"
         );
 
@@ -1286,7 +1493,8 @@ mod tests {
             last_change: Exist { last_change_ts: TimeStamp(80), estimated_versions_to_last_change: 4 }, \
             txn_source: 0, \
             is_locked_with_conflict: false, \
-            generation: 10 \
+            generation: 10, \
+            shared_lock_txns_info: None \
             }"
         );
         log_wrappers::set_redact_info_log(log_wrappers::RedactOption::Flag(true));
@@ -1309,7 +1517,8 @@ mod tests {
             last_change: Exist { last_change_ts: TimeStamp(80), estimated_versions_to_last_change: 4 }, \
             txn_source: 0, \
             is_locked_with_conflict: false, \
-            generation: 10 \
+            generation: 10, \
+            shared_lock_txns_info: None \
             }"
         );
     }
@@ -1342,6 +1551,7 @@ mod tests {
             txn_source: 0,
             is_locked_with_conflict: false,
             generation: 0,
+            shared_lock_txns_info: None,
         };
         assert_eq!(pessimistic_lock.to_lock(), expected_lock);
         assert_eq!(pessimistic_lock.into_lock(), expected_lock);
@@ -1391,5 +1601,76 @@ mod tests {
         // 7 bytes for primary key, 16 bytes for Box<[u8]>, 4 x 8-byte integers, 1
         // enum (8 + 2 * 8) and a bool.
         assert_eq!(lock.memory_size(), 7 + 16 + 5 * 8 + 24);
+    }
+
+    #[test]
+    fn test_new_in_shared_mode_initial_state() {
+        let lock = Lock::new_in_shared_mode();
+
+        assert_eq!(lock.lock_type, LockType::Shared);
+        assert!(lock.primary.is_empty());
+        assert_eq!(lock.ts, TimeStamp::zero());
+        assert_eq!(lock.ttl, 0);
+        assert_eq!(lock.for_update_ts, TimeStamp::zero());
+        assert_eq!(lock.txn_size, 0);
+
+        let info = lock.shared_lock_txns_info.as_ref().unwrap();
+        assert!(info.txn_info_segments.is_empty());
+    }
+
+    #[test]
+    fn test_push_and_find_shared_lock_txn() {
+        let mut shared_lock = Lock::new_in_shared_mode();
+
+        let txn1_ts: TimeStamp = 5.into();
+        let txn1_lock = Lock::new(
+            LockType::Pessimistic,
+            b"txn1".to_vec(),
+            txn1_ts,
+            0,
+            None,
+            TimeStamp::zero(),
+            0,
+            TimeStamp::zero(),
+            false,
+        );
+
+        let txn2_ts: TimeStamp = 7.into();
+        let txn2_lock = Lock::new(
+            LockType::Lock,
+            b"txn2".to_vec(),
+            txn2_ts,
+            0,
+            None,
+            TimeStamp::zero(),
+            0,
+            TimeStamp::zero(),
+            false,
+        );
+
+        shared_lock.put_shared_lock(txn1_lock);
+        shared_lock.put_shared_lock(txn2_lock);
+
+        let segments = &shared_lock
+            .shared_lock_txns_info
+            .as_ref()
+            .unwrap()
+            .txn_info_segments;
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments.get(&txn1_ts).unwrap().ts, txn1_ts);
+        assert_eq!(
+            segments.get(&txn1_ts).unwrap().lock_type,
+            LockType::Pessimistic
+        );
+        assert_eq!(segments.get(&txn2_ts).unwrap().ts, txn2_ts);
+        assert_eq!(segments.get(&txn2_ts).unwrap().lock_type, LockType::Lock);
+
+        let found = shared_lock.find_shared_lock_txn(txn1_ts).unwrap();
+        assert_eq!(found.primary, b"txn1".to_vec());
+        assert_eq!(found.ts, txn1_ts);
+        assert_eq!(found.lock_type, LockType::Pessimistic);
+
+        let missing_ts: TimeStamp = 42.into();
+        assert!(shared_lock.find_shared_lock_txn(missing_ts).is_none());
     }
 }
