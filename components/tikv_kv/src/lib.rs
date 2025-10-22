@@ -83,6 +83,8 @@ pub enum Modify {
     Delete(CfName, Key),
     Put(CfName, Key, Value),
     PessimisticLock(Key, PessimisticLock),
+    // SharedLock performs a upsert to the shared lock.
+    // SharedLock(Key, Lock),
     // cf_name, start_key, end_key, notify_only
     DeleteRange(CfName, Key, Key, bool),
     Ingest(Box<SstMeta>),
@@ -94,6 +96,7 @@ impl HeapSize for Modify {
             Modify::Delete(_, k) => k.approximate_heap_size(),
             Modify::Put(_, k, v) => k.approximate_heap_size() + v.approximate_heap_size(),
             Modify::PessimisticLock(k, _) => k.approximate_heap_size(),
+            // Modify::SharedLock(k, _) => k.approximate_heap_size(),
             Modify::DeleteRange(_, k1, k2, _) => {
                 k1.approximate_heap_size() + k2.approximate_heap_size()
             }

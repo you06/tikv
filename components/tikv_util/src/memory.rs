@@ -86,10 +86,22 @@ impl<T: HeapSize> HeapSize for Vec<T> {
     }
 }
 
-impl<A: HeapSize, B: HeapSize> HeapSize for (A, B) {
-    fn approximate_heap_size(&self) -> usize {
-        self.0.approximate_heap_size() + self.1.approximate_heap_size()
+macro_rules! impl_tuple_heapsize {
+    ( $( ($($pos:tt),+) => ($($name:tt),+) ),+ $(,)? ) => {
+        $(
+            impl<$( $name: HeapSize ),+> HeapSize for ( $( $name ),+ ) {
+                fn approximate_heap_size(&self) -> usize {
+                    0 $( + self.$pos.approximate_heap_size() )+
+                }
+            }
+        )+
     }
+}
+
+impl_tuple_heapsize! {
+    (0, 1) => (A, B),
+    (0, 1, 2) => (A, B, C),
+    // extend on demand
 }
 
 impl<T: HeapSize> HeapSize for Option<T> {

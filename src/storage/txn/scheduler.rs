@@ -2285,7 +2285,7 @@ mod tests {
             )
             .into(),
             commands::AcquirePessimisticLock::new(
-                vec![(Key::from_raw(b"k"), false)],
+                vec![(Key::from_raw(b"k"), false, false)],
                 b"k".to_vec(),
                 10.into(),
                 0,

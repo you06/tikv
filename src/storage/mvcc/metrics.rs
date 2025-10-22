@@ -102,6 +102,19 @@ lazy_static! {
         )
         .unwrap()
     };
+    pub static ref MVCC_PESSIMISTIC_LOCK_ALLOW_CONFLICT_COUNTER: IntCounter =
+        register_int_counter!(
+            "tikv_storage_mvcc_acquire_pessimistic_lock_allow_conflict_total",
+            "Total number of acquire pessimistic lock operations that ignore write conflicts"
+        )
+        .unwrap();
+    pub static ref MVCC_PESSIMISTIC_LOCK_ALLOW_CONFLICT_GAP_HISTOGRAM: Histogram =
+        register_histogram!(
+            "tikv_storage_mvcc_acquire_pessimistic_lock_allow_conflict_ts_gap",
+            "Histogram of commit_ts - for_update_ts when pessimistic lock ignores conflict",
+            exponential_buckets(1.0, 2.0, 30).unwrap()
+        )
+        .unwrap();
     pub static ref MVCC_CHECK_TXN_STATUS_COUNTER_VEC: MvccCheckTxnStatusCounterVec = {
         register_static_int_counter_vec!(
             MvccCheckTxnStatusCounterVec,

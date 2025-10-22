@@ -1082,10 +1082,10 @@ mod tests {
 
         queues.must_pop(b"k1", 5, 6).check_start_ts(10);
         queues.must_pop(b"k1", 5, 6).check_start_ts(12);
-       queues.must_pop(b"k1", 5, 6).check_start_ts(14);
-       queues.must_not_contain_key(b"k1");
-       assert_eq!(queues.entry_count(), 0);
-   }
+        queues.must_pop(b"k1", 5, 6).check_start_ts(14);
+        queues.must_not_contain_key(b"k1");
+        assert_eq!(queues.entry_count(), 0);
+    }
 
     #[test]
     fn test_pop_shared_group() {
@@ -1098,24 +1098,16 @@ mod tests {
         queues.mock_lock_wait_with_shared(b"k1", 20, 5, false, false);
         assert_eq!(queues.entry_count(), 4);
 
-        let (entries, future) = queues.pop_for_waking_up_impl(
-            &Key::from_raw(b"k1"),
-            5.into(),
-            6.into(),
-            Some(50),
-        );
+        let (entries, future) =
+            queues.pop_for_waking_up_impl(&Key::from_raw(b"k1"), 5.into(), 6.into(), Some(50));
         assert_eq!(entries.len(), 3);
         for entry in &entries {
             assert!(entry.shared);
         }
         assert!(future.is_some());
 
-        let (next_entries, next_future) = queues.pop_for_waking_up_impl(
-            &Key::from_raw(b"k1"),
-            7.into(),
-            8.into(),
-            Some(50),
-        );
+        let (next_entries, next_future) =
+            queues.pop_for_waking_up_impl(&Key::from_raw(b"k1"), 7.into(), 8.into(), Some(50));
         assert_eq!(next_entries.len(), 1);
         assert!(!next_entries[0].shared);
         assert!(next_future.is_none());
@@ -1171,10 +1163,7 @@ mod tests {
         assert_eq!(queues.entry_count(), 4);
 
         let (entry, delay_wake_up_future) = queues.must_pop_with_delayed_notify(b"k1", 5, 6);
-        entry
-            .check_key(b"k1")
-            .check_shared(false)
-            .check_start_ts(8);
+        entry.check_key(b"k1").check_shared(false).check_start_ts(8);
 
         // Current queue: [11*, 12*, 13*] (Items marked with * means it has
         // legacy_wake_up_index less than that in KeyLockWaitState, so it might
@@ -1221,10 +1210,7 @@ mod tests {
         // However since 15 is resumable, it will only wake up 14 and return 15
         // through the result of the `delay_wake_up_future`.
         let (entry, delay_wake_up_future) = queues.must_pop_with_delayed_notify(b"k1", 7, 8);
-        entry
-            .check_key(b"k1")
-            .check_shared(false)
-            .check_start_ts(9);
+        entry.check_key(b"k1").check_shared(false).check_start_ts(9);
 
         // Current queue: [14*, 15*, 16*]
         assert_eq!(queues.entry_count(), 3);

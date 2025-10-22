@@ -74,7 +74,7 @@ impl MvccInfo {
                 LockType::Delete => kvrpcpb::Op::Del,
                 LockType::Lock => kvrpcpb::Op::Lock,
                 LockType::Pessimistic => kvrpcpb::Op::PessimisticLock,
-                LockType::Shared => kvrpcpb::Op::Lock,
+                LockType::Shared => kvrpcpb::Op::Shared,
             };
             lock_info.set_type(op);
             lock_info.set_start_ts(lock.ts.into_inner());
