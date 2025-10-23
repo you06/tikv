@@ -1123,6 +1123,7 @@ pub mod tests {
         assert_eq!(LockType::from_mutation(&mutation), Some(LockType::Shared));
     }
 
+    #[cfg(test)]
     fn prepare_shared_pessimistic_lock<E: Engine>(
         engine: &mut E,
         key: &[u8],

@@ -1,6 +1,7 @@
 // Copyright 2017 TiKV Project Authors. Licensed under Apache-2.0.
 
 use std::{
+    result::Result as StdResult,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{channel, RecvTimeoutError},
@@ -32,7 +33,7 @@ use tikv::{
         config_manager::StorageConfigManger,
         kv::{Error as KvError, ErrorInner as KvErrorInner, SnapContext, SnapshotExt},
         lock_manager::MockLockManager,
-        mvcc::{Error as MvccError, ErrorInner as MvccErrorInner},
+        mvcc::{Error as MvccError, ErrorInner as MvccErrorInner, MvccReader},
         test_util::*,
         txn::{
             commands,
@@ -1834,4 +1835,249 @@ fn test_raw_put_deadline() {
     let put_resp = client.raw_put(&put_req).unwrap();
     assert!(!put_resp.has_region_error(), "{:?}", put_resp);
     must_get_equal(&cluster.get_engine(1), b"k3", b"v3");
+}
+
+#[test]
+fn test_shared_lock_multiple_holders() {
+    let storage = TestStorageBuilderApiV1::new(MockLockManager::new())
+        .build()
+        .unwrap();
+    let raw_key = b"shared-lock-basic";
+    let key = Key::from_raw(raw_key);
+
+    let acquire_shared = |start_ts: u64| {
+        let (done_tx, done_rx) = channel::<i32>();
+        storage
+            .sched_txn_command(
+                new_acquire_pessimistic_lock_command_with_shared(
+                    vec![(key.clone(), false, true)],
+                    start_ts,
+                    start_ts,
+                    false,
+                    false,
+                ),
+                expect_pessimistic_lock_res_callback(
+                    done_tx,
+                    PessimisticLockResults(vec![PessimisticLockKeyResult::Empty]),
+                ),
+            )
+            .unwrap();
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    };
+
+    let load_shared_lock = || {
+        let mut engine = storage.get_engine();
+        let snapshot = engine.snapshot(Default::default()).unwrap();
+        let mut reader = MvccReader::new(snapshot, None, true);
+        reader
+            .load_lock(&key)
+            .unwrap()
+            .expect("shared lock should exist")
+    };
+
+    acquire_shared(10);
+    let shared_lock = load_shared_lock();
+    assert!(shared_lock.is_shared());
+    assert_eq!(shared_lock.shared_lock_num(), 1);
+    assert!(
+        shared_lock
+            .find_shared_lock_txn(TimeStamp::from(10))
+            .is_some()
+    );
+
+    // Re-acquiring the same transaction should be idempotent.
+    acquire_shared(10);
+    let shared_lock = load_shared_lock();
+    assert_eq!(shared_lock.shared_lock_num(), 1);
+
+    // A different transaction should be merged into the same shared lock entry.
+    acquire_shared(20);
+    let shared_lock = load_shared_lock();
+    assert!(shared_lock.is_shared());
+    assert_eq!(shared_lock.shared_lock_num(), 2);
+    assert!(
+        shared_lock
+            .find_shared_lock_txn(TimeStamp::from(20))
+            .is_some()
+    );
+}
+
+#[test]
+fn test_shared_lock_conflict_reports_shared_type() {
+    let lock_mgr = MockLockManager::new();
+    let storage = TestStorageBuilderApiV1::new(lock_mgr.clone())
+        .build()
+        .unwrap();
+    let raw_key = b"shared-lock-conflict";
+    let key = Key::from_raw(raw_key);
+
+    let acquire_shared = |start_ts: u64| {
+        let (done_tx, done_rx) = channel::<i32>();
+        storage
+            .sched_txn_command(
+                new_acquire_pessimistic_lock_command_with_shared(
+                    vec![(key.clone(), false, true)],
+                    start_ts,
+                    start_ts,
+                    false,
+                    false,
+                ),
+                expect_pessimistic_lock_res_callback(
+                    done_tx,
+                    PessimisticLockResults(vec![PessimisticLockKeyResult::Empty]),
+                ),
+            )
+            .unwrap();
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    };
+
+    acquire_shared(10);
+
+    // Request a non-shared lock without waiting; it should fail immediately.
+    let (fail_tx, fail_rx) = channel::<i32>();
+    storage
+        .sched_txn_command(
+            new_acquire_pessimistic_lock_command(vec![(key.clone(), false)], 20, 20, false, false)
+                .lock_wait_timeout(None),
+            Box::new(
+                move |res: storage::Result<StdResult<PessimisticLockResults, StorageError>>| {
+                    match res {
+                        Ok(Err(err)) => match err {
+                            Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(
+                                MvccError(box MvccErrorInner::KeyIsLocked(ref info)),
+                            )))) => {
+                                assert_eq!(info.get_lock_type(), Op::Shared);
+                                assert_eq!(info.get_key(), raw_key);
+                            }
+                            other => panic!("unexpected error chain: {:?}", other),
+                        },
+                        Ok(Ok(results)) => {
+                            panic!("unexpected success acquiring lock: {:?}", results);
+                        }
+                        Err(err) => match err {
+                            Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(
+                                MvccError(box MvccErrorInner::KeyIsLocked(ref info)),
+                            )))) => {
+                                assert_eq!(info.get_lock_type(), Op::Shared);
+                                assert_eq!(info.get_key(), raw_key);
+                            }
+                            other => panic!("unexpected storage error: {:?}", other),
+                        },
+                    }
+                    fail_tx.send(0).unwrap();
+                },
+            ),
+        )
+        .unwrap();
+    fail_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    assert!(
+        lock_mgr.get_all_tokens().is_empty(),
+        "lock waiters should not be registered when no wait is allowed"
+    );
+
+    let mut engine = storage.get_engine();
+    let snapshot = engine.snapshot(Default::default()).unwrap();
+    let mut reader = MvccReader::new(snapshot, None, true);
+    let shared_lock = reader
+        .load_lock(&key)
+        .unwrap()
+        .expect("shared lock should remain");
+    assert!(shared_lock.is_shared());
+    assert_eq!(shared_lock.shared_lock_num(), 1);
+    assert!(
+        shared_lock
+            .find_shared_lock_txn(TimeStamp::from(10))
+            .is_some()
+    );
+}
+
+#[test]
+fn test_shared_lock_conflict_waits_before_exclusive_lock() {
+    let lock_mgr = MockLockManager::new();
+    let storage = TestStorageBuilderApiV1::new(lock_mgr.clone())
+        .wake_up_delay_duration(100)
+        .build()
+        .unwrap();
+    let raw_key = b"shared-lock-waiting";
+    let key = Key::from_raw(raw_key);
+
+    let acquire_shared = |start_ts: u64| {
+        let (done_tx, done_rx) = channel::<i32>();
+        storage
+            .sched_txn_command(
+                new_acquire_pessimistic_lock_command_with_shared(
+                    vec![(key.clone(), false, true)],
+                    start_ts,
+                    start_ts,
+                    false,
+                    false,
+                ),
+                expect_pessimistic_lock_res_callback(
+                    done_tx,
+                    PessimisticLockResults(vec![PessimisticLockKeyResult::Empty]),
+                ),
+            )
+            .unwrap();
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    };
+
+    // Hold the key with two shared lock owners.
+    acquire_shared(10);
+    acquire_shared(20);
+
+    // Confirm the shared lock contains both holders.
+    let mut engine = storage.get_engine();
+    let snapshot = engine.snapshot(Default::default()).unwrap();
+    let mut reader = MvccReader::new(snapshot, None, true);
+    let shared_lock = reader
+        .load_lock(&key)
+        .unwrap()
+        .expect("shared lock should exist");
+    assert!(shared_lock.is_shared());
+    assert_eq!(shared_lock.shared_lock_num(), 2);
+
+    let tokens_before = lock_mgr.get_all_tokens();
+
+    // Try to acquire an exclusive pessimistic lock. It should wait rather than
+    // returning immediately.
+    let (blocked_tx, blocked_rx) = channel();
+    storage
+        .sched_txn_command(
+            new_acquire_pessimistic_lock_command(vec![(key.clone(), false)], 30, 30, false, false),
+            expect_fail_callback(blocked_tx, 0, move |err| match err {
+                Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(MvccError(
+                    box MvccErrorInner::KeyIsLocked(ref info),
+                ))))) => {
+                    assert_eq!(info.get_lock_type(), Op::Shared);
+                    assert_eq!(info.get_key(), raw_key);
+                }
+                other => panic!("unexpected error chain: {:?}", other),
+            }),
+        )
+        .unwrap();
+    blocked_rx
+        .recv_timeout(Duration::from_millis(100))
+        .unwrap_err();
+
+    use std::ops::Sub;
+    let tokens_after = lock_mgr.get_all_tokens();
+    let diff = tokens_after.sub(&tokens_before);
+    assert_eq!(diff.len(), 1, "expect exactly one waiter created");
+    let waiting_token = diff.into_iter().next().unwrap();
+
+    // Clean up the shared locks while the waiter is still pending.
+    delete_pessimistic_lock(&storage, key.clone(), 10, 10);
+    delete_pessimistic_lock(&storage, key.clone(), 20, 20);
+
+    // Simulate that the waiter times out so the callback is notified with the
+    // shared lock info.
+    lock_mgr.simulate_timeout(waiting_token);
+    blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(
+        !lock_mgr.get_all_tokens().contains(&waiting_token),
+        "waiting token should be cleaned up after wake up"
+    );
+
+    must_have_locks(&storage, 100, b"", b"\xff\xff\xff", &[]);
 }
