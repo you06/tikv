@@ -92,15 +92,30 @@ pub fn prewrite_with_generation<S: Snapshot>(
 
     let mut lock_amended = false;
 
-    let (lock, lock_status) = match reader.load_lock(&mutation.key)? {
-        Some(lock) => {
+    let (mut lock, mut shared_lock, lock_status) = match reader.load_lock(&mutation.key)? {
+        Some(mut lock) => {
+            let (lock, shared_lock) = if lock.is_shared() {
+                match lock.remove_shared_lock(reader.start_ts) {
+                    Some(l) => (l, Some(lock)),
+                    None => {
+                        return Err(ErrorInner::PessimisticLockNotFound {
+                            start_ts: reader.start_ts,
+                            key: mutation.key.into_raw()?,
+                            reason: PessimisticLockNotFoundReason::LockMissingAmendFail,
+                        }
+                        .into());
+                    }
+                }
+            } else {
+                (lock, None)
+            };
             let (lock, lock_status) = mutation.check_lock(
                 lock,
                 pessimistic_action,
                 expected_for_update_ts,
                 generation,
             )?;
-            (Some(lock), lock_status)
+            (Some(lock), shared_lock, lock_status)
         }
         None if matches!(pessimistic_action, DoPessimisticCheck) => {
             // pipelined DML can't go into this. Otherwise, assertions may need to be
@@ -108,9 +123,9 @@ pub fn prewrite_with_generation<S: Snapshot>(
             assert_eq!(generation, 0);
             amend_pessimistic_lock(&mut mutation, reader)?;
             lock_amended = true;
-            (None, LockStatus::None)
+            (None, None, LockStatus::None)
         }
-        None => (None, LockStatus::None),
+        None => (None, None, LockStatus::None),
     };
 
     // a key can be flushed multiple times. We cannot skip the prewrite if it is
@@ -120,7 +135,7 @@ pub fn prewrite_with_generation<S: Snapshot>(
             if !mutation.is_shared_lock {
                 return Ok((ts, OldValue::Unspecified));
             }
-            if let Some(existing_lock) = lock.as_ref() {
+            if let Some(existing_lock) = lock.as_mut() {
                 if let Some(sub_lock) = existing_lock
                     .is_shared()
                     .then(|| existing_lock.find_shared_lock_txn(mutation.txn_props.start_ts))
@@ -224,7 +239,7 @@ pub fn prewrite_with_generation<S: Snapshot>(
     let is_new_lock = !matches!(pessimistic_action, DoPessimisticCheck) || lock_amended;
 
     let final_min_commit_ts =
-        mutation.write_lock(lock_status, txn, is_new_lock, generation, lock)?;
+        mutation.write_lock(lock_status, txn, is_new_lock, generation, shared_lock)?;
 
     fail_point!("after_prewrite_one_key");
 

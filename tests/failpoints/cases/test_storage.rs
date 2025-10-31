@@ -1876,7 +1876,7 @@ fn test_shared_lock_multiple_holders() {
     };
 
     acquire_shared(10);
-    let shared_lock = load_shared_lock();
+    let mut shared_lock = load_shared_lock();
     assert!(shared_lock.is_shared());
     assert_eq!(shared_lock.shared_lock_num(), 1);
     assert!(
@@ -1892,7 +1892,7 @@ fn test_shared_lock_multiple_holders() {
 
     // A different transaction should be merged into the same shared lock entry.
     acquire_shared(20);
-    let shared_lock = load_shared_lock();
+    let mut shared_lock = load_shared_lock();
     assert!(shared_lock.is_shared());
     assert_eq!(shared_lock.shared_lock_num(), 2);
     assert!(
@@ -1979,7 +1979,7 @@ fn test_shared_lock_conflict_reports_shared_type() {
     let mut engine = storage.get_engine();
     let snapshot = engine.snapshot(Default::default()).unwrap();
     let mut reader = MvccReader::new(snapshot, None, true);
-    let shared_lock = reader
+    let mut shared_lock = reader
         .load_lock(&key)
         .unwrap()
         .expect("shared lock should remain");

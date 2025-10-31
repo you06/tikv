@@ -112,8 +112,8 @@ pub fn acquire_pessimistic_lock<S: Snapshot>(
     }
 
     let mut val = None;
-    let exist_lock = reader.load_lock(&key)?;
-    if let Some(lock) = exist_lock.as_ref() {
+    let mut exist_lock = reader.load_lock(&key)?;
+    if let Some(lock) = exist_lock.as_mut() {
         let can_add_shared_lock = is_shared && lock.is_shared();
         if !can_add_shared_lock {
             if lock.ts != reader.start_ts {

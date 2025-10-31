@@ -86,6 +86,15 @@ impl<T: HeapSize> HeapSize for Vec<T> {
     }
 }
 
+impl<L: HeapSize, R: HeapSize> HeapSize for crate::Either<L, R> {
+    fn approximate_heap_size(&self) -> usize {
+        match self {
+            crate::Either::Left(left) => left.approximate_heap_size(),
+            crate::Either::Right(right) => right.approximate_heap_size(),
+        }
+    }
+}
+
 macro_rules! impl_tuple_heapsize {
     ( $( ($($pos:tt),+) => ($($name:tt),+) ),+ $(,)? ) => {
         $(

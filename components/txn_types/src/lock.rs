@@ -6,6 +6,7 @@ use byteorder::ReadBytesExt;
 use collections::HashMap;
 use kvproto::kvrpcpb::{IsolationLevel, LockInfo, Op, WriteConflictReason};
 use tikv_util::{
+    Either,
     codec::{
         bytes::{self, BytesEncoder},
         number::{self, NumberEncoder, MAX_VAR_I64_LEN, MAX_VAR_U64_LEN},
@@ -283,10 +284,10 @@ impl Lock {
 
     #[inline]
     #[must_use]
-    pub fn find_shared_lock_txn(&self, start_ts: TimeStamp) -> Option<&Lock> {
+    pub fn find_shared_lock_txn<'a> (&'a mut self, start_ts: TimeStamp) -> Option<&'a Lock> {
         self.shared_lock_txns_info
-            .as_ref()
-            .and_then(|info| info.txn_info_segments.get(&start_ts))
+            .as_mut()
+            .and_then(|info| info.get_lock(&start_ts))
     }
 
     #[inline]
@@ -294,7 +295,7 @@ impl Lock {
     pub fn remove_shared_lock(&mut self, start_ts: TimeStamp) -> Option<Lock> {
         if self.is_shared() {
             if let Some(info) = self.shared_lock_txns_info.as_mut() {
-                return info.txn_info_segments.remove(&start_ts);
+                return info.remove_lock(&start_ts);
             }
         }
         return None;
@@ -319,10 +320,9 @@ impl Lock {
         assert!(self.is_shared());
         if let Some(existing) = self
             .shared_lock_txns_info
-            .as_ref()
+            .as_mut()
             .unwrap()
-            .txn_info_segments
-            .get(&lock.ts)
+            .get_lock(&lock.ts)
         {
             if existing.lock_type == lock.lock_type {
                 return;
@@ -350,8 +350,7 @@ impl Lock {
             .shared_lock_txns_info
             .as_mut()
             .unwrap()
-            .txn_info_segments
-            .insert(ts, lock);
+            .put_lock(ts, lock);
         if lock_type == LockType::Lock {
             debug_assert!(
                 old.is_some(),
@@ -425,11 +424,13 @@ impl Lock {
             b.push(SHARED_LOCK_TXNS_INFO_PREFIX);
             b.encode_var_u64(info.txn_info_segments.len() as u64)
                 .unwrap();
-            let mut segments: Vec<_> = info.txn_info_segments.values().collect();
-            segments.sort_by(|a, b| a.ts.cmp(&b.ts));
+            let segments: Vec<_> = info.txn_info_segments.values().collect();
+            // segments.sort_by(|a, b| a.ts.cmp(&b.ts));
             for seg in segments {
-                let encoded = seg.to_bytes();
-                b.encode_compact_bytes(&encoded).unwrap();
+                match seg {
+                    Either::Left(v) => b.encode_compact_bytes(&v).unwrap(),
+                    Either::Right(l) => b.encode_compact_bytes(&l.to_bytes()).unwrap(),
+                };
             }
         } else {
             debug_assert!(
@@ -488,7 +489,10 @@ impl Lock {
                 + info
                     .txn_info_segments
                     .values()
-                    .map(|lock| MAX_VAR_I64_LEN + lock.pre_allocate_size())
+                    .map(|lock| MAX_VAR_I64_LEN + match lock {
+                        Either::Left(v) => v.len(),
+                        Either::Right(l) => l.pre_allocate_size(),
+                    })
                     .sum::<usize>();
         }
         size
@@ -500,6 +504,16 @@ impl Lock {
         }
         let lock_type = LockType::from_u8(b[0]).ok_or(ErrorInner::BadFormatLock)?;
         Ok(lock_type)
+    }
+
+    pub fn detect_lock_ts(b: &[u8]) -> Result<TimeStamp> {
+        if b.is_empty() {
+            return Err(Error::from(ErrorInner::BadFormatLock));
+        }
+        let mut b = &b[1..];
+        let _ = bytes::decode_compact_bytes(&mut b)?;
+        let ts = number::decode_var_u64(&mut b)?.into();
+        Ok(ts)
     }
 
     pub fn parse(mut b: &[u8]) -> Result<Lock> {
@@ -594,8 +608,8 @@ impl Lock {
                     segments.reserve(len);
                     for _ in 0..len {
                         let lock_bytes = bytes::decode_compact_bytes(&mut b)?;
-                        let lock = Lock::parse(&lock_bytes)?;
-                        segments.insert(lock.ts, lock);
+                        let lock_ts = Lock::detect_lock_ts(&lock_bytes)?;
+                        segments.insert(lock_ts, Either::Left(lock_bytes.to_owned()));
                     }
                     shared_lock_txns_info = Some(SharedLockTxnsInfo {
                         txn_info_segments: segments,
@@ -789,7 +803,67 @@ impl Lock {
 
 #[derive(PartialEq, Clone, Debug)]
 pub struct SharedLockTxnsInfo {
-    pub txn_info_segments: HashMap<TimeStamp, Lock>,
+    pub txn_info_segments: HashMap<TimeStamp, Either<Vec<u8>, Lock>>,
+}
+
+impl SharedLockTxnsInfo {
+    pub fn len(&self) -> usize {
+        self.txn_info_segments.len()
+    }
+
+    pub fn put_lock(&mut self, ts: TimeStamp, lock: Lock) -> Option<Lock> {
+        match self.txn_info_segments
+            .insert(ts, Either::Right(lock)) {
+            Some(either) => match either {
+                Either::Left(encoded) => Some(
+                    Lock::parse(&encoded).expect("failed to parse shared lock txn info"),
+                ),
+                Either::Right(lock) => Some(lock),
+            },
+            None => None,
+        }
+    }
+
+    pub fn get_lock(&mut self, ts: &TimeStamp) -> Option<&Lock> {
+        if let Some(either) = self.txn_info_segments.get_mut(&ts) {
+            match either {
+                Either::Left(encoded) => {
+                    let lock = Lock::parse(encoded).expect("failed to parse shared lock txn info");
+                    *either = Either::Right(lock);
+                    either.as_ref().right()
+                }
+                Either::Right(lock) => Some(lock),
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn remove_lock(&mut self, ts: &TimeStamp) -> Option<Lock> {
+        if let Some(either) = self.txn_info_segments.remove(ts) {
+            match either {
+                Either::Left(encoded) => Some(
+                    Lock::parse(&encoded).expect("failed to parse shared lock txn info"),
+                ),
+                Either::Right(lock) => Some(lock),
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn parse_all(&mut self){
+        for (_ts, either) in self.txn_info_segments.iter_mut() {
+            match either {
+                Either::Left(encoded) => {
+                    let lock =
+                        Lock::parse(encoded).expect("failed to parse shared lock txn info");
+                    *either = Either::Right(lock);
+                },
+                _ => {},
+            }
+        }
+    }
 }
 
 impl HeapSize for SharedLockTxnsInfo {
@@ -1181,7 +1255,7 @@ mod tests {
                     let mut segments = HashMap::default();
                     let seg1_ts: TimeStamp = 11.into();
                     let seg1 = Lock::new(
-                        LockType::Put,
+                        LockType::Pessimistic,
                         b"seg1".to_vec(),
                         seg1_ts,
                         22,
@@ -1191,10 +1265,10 @@ mod tests {
                         TimeStamp::zero(),
                         false,
                     );
-                    segments.insert(seg1_ts, seg1);
+                    segments.insert(seg1_ts, Either::Right(seg1));
                     let seg2_ts: TimeStamp = 33.into();
                     let seg2 = Lock::new(
-                        LockType::Delete,
+                        LockType::Pessimistic,
                         b"seg2".to_vec(),
                         seg2_ts,
                         44,
@@ -1204,14 +1278,17 @@ mod tests {
                         TimeStamp::zero(),
                         false,
                     );
-                    segments.insert(seg2_ts, seg2);
+                    segments.insert(seg2_ts, Either::Right(seg2));
                     segments
                 },
             }),
         ];
         for (i, lock) in locks.drain(..).enumerate() {
             let v = lock.to_bytes();
-            let l = Lock::parse(&v[..]).unwrap_or_else(|e| panic!("#{} parse() err: {:?}", i, e));
+            let mut l = Lock::parse(&v[..]).unwrap_or_else(|e| panic!("#{} parse() err: {:?}", i, e));
+            if l.lock_type == LockType::Shared {
+                l.shared_lock_txns_info.as_mut().unwrap().parse_all();
+            }
             assert_eq!(l, lock, "#{} expect {:?}, but got {:?}", i, lock, l);
             assert!(lock.pre_allocate_size() >= v.len());
         }
@@ -1668,9 +1745,9 @@ mod tests {
 
         assert_eq!(lock.lock_type, LockType::Shared);
         assert!(lock.primary.is_empty());
-        assert_eq!(lock.ts, TimeStamp::zero());
+        assert_eq!(lock.ts, TimeStamp::max());
         assert_eq!(lock.ttl, 0);
-        assert_eq!(lock.for_update_ts, TimeStamp::zero());
+        assert_eq!(lock.for_update_ts, TimeStamp::max());
         assert_eq!(lock.txn_size, 0);
 
         let info = lock.shared_lock_txns_info.as_ref().unwrap();
@@ -1695,7 +1772,18 @@ mod tests {
         );
 
         let txn2_ts: TimeStamp = 7.into();
-        let txn2_lock = Lock::new(
+        let txn2_pessimistic_lock = Lock::new(
+            LockType::Pessimistic,
+            b"txn2".to_vec(),
+            txn2_ts,
+            0,
+            None,
+            TimeStamp::zero(),
+            0,
+            TimeStamp::zero(),
+            false,
+        );
+        let txn2_prewrite_lock = Lock::new(
             LockType::Lock,
             b"txn2".to_vec(),
             txn2_ts,
@@ -1708,21 +1796,21 @@ mod tests {
         );
 
         shared_lock.put_shared_lock(txn1_lock);
-        shared_lock.put_shared_lock(txn2_lock);
+        shared_lock.put_shared_lock(txn2_pessimistic_lock);
+        shared_lock.put_shared_lock(txn2_prewrite_lock);
 
-        let segments = &shared_lock
+        let segments = shared_lock
             .shared_lock_txns_info
-            .as_ref()
-            .unwrap()
-            .txn_info_segments;
+            .as_mut()
+            .unwrap();
         assert_eq!(segments.len(), 2);
-        assert_eq!(segments.get(&txn1_ts).unwrap().ts, txn1_ts);
+        assert_eq!(segments.get_lock(&txn1_ts).unwrap().ts, txn1_ts);
         assert_eq!(
-            segments.get(&txn1_ts).unwrap().lock_type,
+            segments.get_lock(&txn1_ts).unwrap().lock_type,
             LockType::Pessimistic
         );
-        assert_eq!(segments.get(&txn2_ts).unwrap().ts, txn2_ts);
-        assert_eq!(segments.get(&txn2_ts).unwrap().lock_type, LockType::Lock);
+        assert_eq!(segments.get_lock(&txn2_ts).unwrap().ts, txn2_ts);
+        assert_eq!(segments.get_lock(&txn2_ts).unwrap().lock_type, LockType::Lock);
 
         let found = shared_lock.find_shared_lock_txn(txn1_ts).unwrap();
         assert_eq!(found.primary, b"txn1".to_vec());
