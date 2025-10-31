@@ -813,6 +813,7 @@ pub mod tests {
         lock
     }
 
+    #[cfg(test)]
     fn must_acquire_shared_lock<E: Engine>(
         engine: &mut E,
         key: &[u8],
@@ -855,6 +856,7 @@ pub mod tests {
         res.0
     }
 
+    #[cfg(test)]
     fn load_lock<E: Engine>(engine: &mut E, key: &[u8]) -> Lock {
         let snapshot = engine.snapshot(Default::default()).unwrap();
         let mut reader = MvccReader::new(snapshot, None, true);
