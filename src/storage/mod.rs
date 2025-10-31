@@ -3951,8 +3951,9 @@ pub mod test_util {
         return_values: bool,
         check_existence: bool,
     ) -> PessimisticLockCommand {
-        new_acquire_pessimistic_lock_command_with_shared(
+        new_acquire_pessimistic_lock_command_with_pk(
             keys.into_iter().map(|(k, b)| (k, b, false)).collect(),
+            None,
             start_ts,
             for_update_ts,
             return_values,
@@ -3961,14 +3962,14 @@ pub mod test_util {
     }
 
     pub fn new_acquire_pessimistic_lock_command_with_shared(
-        keys: Vec<(Key, bool, bool)>,
+        keys: Vec<(Key, bool)>,
         start_ts: impl Into<TimeStamp>,
         for_update_ts: impl Into<TimeStamp>,
         return_values: bool,
         check_existence: bool,
     ) -> PessimisticLockCommand {
         new_acquire_pessimistic_lock_command_with_pk(
-            keys,
+            keys.into_iter().map(|(k, b)| (k, b, true)).collect(),
             None,
             start_ts,
             for_update_ts,

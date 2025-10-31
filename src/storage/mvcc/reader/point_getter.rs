@@ -194,6 +194,11 @@ impl<S: Snapshot> PointGetter<S> {
         let lock_value = self.snapshot.get_cf(CF_LOCK, user_key)?;
 
         if let Some(ref lock_value) = lock_value {
+            let lock_type = Lock::detect_lock_type(lock_value)?;
+            if lock_type == LockType::Shared {
+                // Shared locks do not block reads.
+                return Ok(None);
+            }
             let lock = Lock::parse(lock_value)?;
             if self.met_newer_ts_data == NewerTsCheckState::NotMetYet {
                 self.met_newer_ts_data = NewerTsCheckState::Met;

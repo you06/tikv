@@ -1379,6 +1379,7 @@ impl<E: Engine, L: LockManager> TxnScheduler<E, L> {
         write_result: WriteResult,
         sched_details: &mut SchedulerDetails,
         txn_ext: Option<Arc<TxnExt>>,
+        is_shared_lock_cmd: bool,
     ) -> Option<(WriteResult, TaskMetadata<'a>)> {
         let WriteResult {
             ctx,
@@ -1468,6 +1469,7 @@ impl<E: Engine, L: LockManager> TxnScheduler<E, L> {
             tag,
             CommandKind::acquire_pessimistic_lock | CommandKind::acquire_pessimistic_lock_resumed
         ) && txn_scheduler.pessimistic_lock_mode() == PessimisticLockMode::InMemory
+            && !is_shared_lock_cmd
             && txn_scheduler.try_write_in_memory_pessimistic_locks(
                 txn_ext.as_deref(),
                 &mut to_be_write,
@@ -1819,6 +1821,11 @@ impl<E: Engine, L: LockManager> TxnScheduler<E, L> {
         let mut task_meta_data = TaskMetadata::from_ctx(task.cmd().resource_control_ctx());
         let pipelined = task.cmd().can_be_pipelined()
             && self.pessimistic_lock_mode() == PessimisticLockMode::Pipelined;
+        let is_shared_lock_cmd = if let Command::AcquirePessimisticLock(ref cmd) = task.cmd() {
+            cmd.keys.iter().any(|k| k.2)
+        } else {
+            false
+        };
         let txn_ext = snapshot.ext().get_txn_ext().cloned();
         let deadline = task.cmd().deadline();
         let write_result = Self::handle_task(self.clone(), snapshot, task, sched_details).await;
@@ -1861,6 +1868,7 @@ impl<E: Engine, L: LockManager> TxnScheduler<E, L> {
                 write_result,
                 sched_details,
                 txn_ext.clone(),
+                is_shared_lock_cmd,
             )
         {
             write_result = write_result_res;

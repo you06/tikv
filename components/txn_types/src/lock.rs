@@ -494,6 +494,14 @@ impl Lock {
         size
     }
 
+    pub fn detect_lock_type(b: &[u8]) -> Result<LockType> {
+        if b.is_empty() {
+            return Err(Error::from(ErrorInner::BadFormatLock));
+        }
+        let lock_type = LockType::from_u8(b[0]).ok_or(ErrorInner::BadFormatLock)?;
+        Ok(lock_type)
+    }
+
     pub fn parse(mut b: &[u8]) -> Result<Lock> {
         if b.is_empty() {
             return Err(Error::from(ErrorInner::BadFormatLock));
@@ -583,6 +591,7 @@ impl Lock {
                 SHARED_LOCK_TXNS_INFO_PREFIX => {
                     let len = number::decode_var_u64(&mut b)? as usize;
                     let mut segments = HashMap::default();
+                    segments.reserve(len);
                     for _ in 0..len {
                         let lock_bytes = bytes::decode_compact_bytes(&mut b)?;
                         let lock = Lock::parse(&lock_bytes)?;

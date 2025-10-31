@@ -1850,7 +1850,7 @@ fn test_shared_lock_multiple_holders() {
         storage
             .sched_txn_command(
                 new_acquire_pessimistic_lock_command_with_shared(
-                    vec![(key.clone(), false, true)],
+                    vec![(key.clone(), false)],
                     start_ts,
                     start_ts,
                     false,
@@ -1916,7 +1916,7 @@ fn test_shared_lock_conflict_reports_shared_type() {
         storage
             .sched_txn_command(
                 new_acquire_pessimistic_lock_command_with_shared(
-                    vec![(key.clone(), false, true)],
+                    vec![(key.clone(), false)],
                     start_ts,
                     start_ts,
                     false,
@@ -2007,7 +2007,7 @@ fn test_shared_lock_conflict_waits_before_exclusive_lock() {
         storage
             .sched_txn_command(
                 new_acquire_pessimistic_lock_command_with_shared(
-                    vec![(key.clone(), false, true)],
+                    vec![(key.clone(), false)],
                     start_ts,
                     start_ts,
                     false,
@@ -2041,18 +2041,13 @@ fn test_shared_lock_conflict_waits_before_exclusive_lock() {
 
     // Try to acquire an exclusive pessimistic lock. It should wait rather than
     // returning immediately.
-    let (blocked_tx, blocked_rx) = channel();
+    let (blocked_tx, blocked_rx) =
+        channel::<storage::Result<StdResult<PessimisticLockResults, StorageError>>>();
     storage
         .sched_txn_command(
             new_acquire_pessimistic_lock_command(vec![(key.clone(), false)], 30, 30, false, false),
-            expect_fail_callback(blocked_tx, 0, move |err| match err {
-                Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(MvccError(
-                    box MvccErrorInner::KeyIsLocked(ref info),
-                ))))) => {
-                    assert_eq!(info.get_lock_type(), Op::Shared);
-                    assert_eq!(info.get_key(), raw_key);
-                }
-                other => panic!("unexpected error chain: {:?}", other),
+            Box::new(move |res| {
+                blocked_tx.send(res).unwrap();
             }),
         )
         .unwrap();
@@ -2064,16 +2059,111 @@ fn test_shared_lock_conflict_waits_before_exclusive_lock() {
     let tokens_after = lock_mgr.get_all_tokens();
     let diff = tokens_after.sub(&tokens_before);
     assert_eq!(diff.len(), 1, "expect exactly one waiter created");
+    let _waiting_token_from_commit = diff.into_iter().next().unwrap();
+
+    // Prewrite and commit both shared lock holders so the waiting request is
+    // resumed.
+    let prewrite_and_commit = |start_ts: u64| {
+        let (prewrite_tx, prewrite_rx) = channel();
+        storage
+            .sched_txn_command(
+                commands::PrewritePessimistic::new(
+                    vec![(
+                        Mutation::make_put(key.clone(), start_ts.to_le_bytes().to_vec()),
+                        DoPessimisticCheck,
+                    )],
+                    key.to_raw().unwrap(),
+                    start_ts.into(),
+                    3000,
+                    start_ts.into(),
+                    1,
+                    (start_ts + 1).into(),
+                    TimeStamp::default(),
+                    None,
+                    false,
+                    AssertionLevel::Off,
+                    vec![],
+                    Context::default(),
+                ),
+                expect_ok_callback(prewrite_tx, 0),
+            )
+            .unwrap();
+        prewrite_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let (commit_tx, commit_rx) = channel();
+        storage
+            .sched_txn_command(
+                commands::Commit::new(
+                    vec![key.clone()],
+                    start_ts.into(),
+                    (start_ts + 1).into(),
+                    Context::default(),
+                ),
+                expect_ok_callback(commit_tx, 0),
+            )
+            .unwrap();
+        commit_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    };
+
+    prewrite_and_commit(10);
+    prewrite_and_commit(20);
+
+    let res = blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    res.unwrap_err();
+
+    // Re-acquire shared locks for the timeout path.
+    acquire_shared(110);
+    acquire_shared(120);
+
+    let tokens_before = lock_mgr.get_all_tokens();
+    let (timeout_tx, timeout_rx) =
+        channel::<storage::Result<StdResult<PessimisticLockResults, StorageError>>>();
+    storage
+        .sched_txn_command(
+            new_acquire_pessimistic_lock_command(
+                vec![(key.clone(), false)],
+                130,
+                130,
+                false,
+                false,
+            ),
+            Box::new(move |res| {
+                timeout_tx.send(res).unwrap();
+            }),
+        )
+        .unwrap();
+    timeout_rx
+        .recv_timeout(Duration::from_millis(100))
+        .unwrap_err();
+
+    let tokens_after = lock_mgr.get_all_tokens();
+    let diff = tokens_after.sub(&tokens_before);
+    assert_eq!(diff.len(), 1, "expect exactly one waiter created");
     let waiting_token = diff.into_iter().next().unwrap();
 
-    // Clean up the shared locks while the waiter is still pending.
-    delete_pessimistic_lock(&storage, key.clone(), 10, 10);
-    delete_pessimistic_lock(&storage, key.clone(), 20, 20);
+    delete_pessimistic_lock(&storage, key.clone(), 110, 110);
+    delete_pessimistic_lock(&storage, key.clone(), 120, 120);
 
     // Simulate that the waiter times out so the callback is notified with the
     // shared lock info.
     lock_mgr.simulate_timeout(waiting_token);
-    blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let timeout_res = timeout_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let err = match timeout_res {
+        Err(err) => err,
+        Ok(result) => match result {
+            Err(storage_err) => storage_err,
+            Ok(res) => panic!("unexpected success acquiring lock: {:?}", res),
+        },
+    };
+    match err {
+        Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(MvccError(
+            box MvccErrorInner::KeyIsLocked(ref info),
+        ))))) => {
+            assert_eq!(info.get_lock_type(), Op::Shared);
+            assert_eq!(info.get_key(), raw_key);
+        }
+        other => panic!("unexpected error chain: {:?}", other),
+    }
     assert!(
         !lock_mgr.get_all_tokens().contains(&waiting_token),
         "waiting token should be cleaned up after wake up"
