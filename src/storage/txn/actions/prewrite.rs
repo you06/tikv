@@ -92,9 +92,30 @@ pub fn prewrite_with_generation<S: Snapshot>(
 
     let mut lock_amended = false;
 
-    let lock_status = match reader.load_lock(&mutation.key)? {
-        Some(lock) => {
-            mutation.check_lock(lock, pessimistic_action, expected_for_update_ts, generation)?
+    let (mut lock, mut shared_lock, lock_status) = match reader.load_lock(&mutation.key)? {
+        Some(mut lock) => {
+            let (lock, shared_lock) = if lock.is_shared() {
+                match lock.remove_shared_lock(reader.start_ts) {
+                    Some(l) => (l, Some(lock)),
+                    None => {
+                        return Err(ErrorInner::PessimisticLockNotFound {
+                            start_ts: reader.start_ts,
+                            key: mutation.key.into_raw()?,
+                            reason: PessimisticLockNotFoundReason::LockMissingAmendFail,
+                        }
+                        .into());
+                    }
+                }
+            } else {
+                (lock, None)
+            };
+            let (lock, lock_status) = mutation.check_lock(
+                lock,
+                pessimistic_action,
+                expected_for_update_ts,
+                generation,
+            )?;
+            (Some(lock), shared_lock, lock_status)
         }
         None if matches!(pessimistic_action, DoPessimisticCheck) => {
             // pipelined DML can't go into this. Otherwise, assertions may need to be
@@ -102,9 +123,9 @@ pub fn prewrite_with_generation<S: Snapshot>(
             assert_eq!(generation, 0);
             amend_pessimistic_lock(&mut mutation, reader)?;
             lock_amended = true;
-            LockStatus::None
+            (None, None, LockStatus::None)
         }
-        None => LockStatus::None,
+        None => (None, None, LockStatus::None),
     };
 
     // a key can be flushed multiple times. We cannot skip the prewrite if it is
@@ -204,7 +225,8 @@ pub fn prewrite_with_generation<S: Snapshot>(
 
     let is_new_lock = !matches!(pessimistic_action, DoPessimisticCheck) || lock_amended;
 
-    let final_min_commit_ts = mutation.write_lock(lock_status, txn, is_new_lock, generation)?;
+    let final_min_commit_ts =
+        mutation.write_lock(lock_status, txn, is_new_lock, generation, shared_lock)?;
 
     fail_point!("after_prewrite_one_key");
 
@@ -361,8 +383,8 @@ impl<'a> PrewriteMutation<'a> {
         pessimistic_action: PrewriteRequestPessimisticAction,
         expected_for_update_ts: Option<TimeStamp>,
         generation_to_write: u64,
-    ) -> Result<LockStatus> {
-        if lock.ts != self.txn_props.start_ts {
+    ) -> Result<(Lock, LockStatus)> {
+        if !lock.contains_start_ts(self.txn_props.start_ts) {
             // Abort on lock belonging to other transaction if
             // prewrites a pessimistic lock.
             if matches!(pessimistic_action, DoPessimisticCheck) {
@@ -450,7 +472,8 @@ impl<'a> PrewriteMutation<'a> {
             self.lock_ttl = std::cmp::max(self.lock_ttl, lock.ttl);
             self.min_commit_ts = std::cmp::max(self.min_commit_ts, lock.min_commit_ts);
 
-            return Ok(LockStatus::Pessimistic(lock.for_update_ts));
+            let for_update_ts = lock.for_update_ts;
+            return Ok((lock, LockStatus::Pessimistic(for_update_ts)));
         }
 
         if generation_to_write > 0 && lock.generation >= generation_to_write {
@@ -480,7 +503,7 @@ impl<'a> PrewriteMutation<'a> {
         } else {
             TimeStamp::zero()
         };
-        Ok(LockStatus::Locked(min_commit_ts))
+        Ok((lock, LockStatus::Locked(min_commit_ts)))
     }
 
     fn check_for_newer_version<S: Snapshot>(
@@ -576,6 +599,8 @@ impl<'a> PrewriteMutation<'a> {
         txn: &mut MvccTxn,
         is_new_lock: bool,
         generation: u64,
+        // current_lock only exists for shared lock, the prewrite lock is embedded into it.
+        current_lock: Option<Lock>,
     ) -> Result<TimeStamp> {
         let mut try_one_pc = self.try_one_pc();
 
@@ -602,7 +627,7 @@ impl<'a> PrewriteMutation<'a> {
         // Only Lock needs to record `last_change_ts` in its write record, Put or Delete
         // records themselves are effective changes.
         if tls_can_enable(LAST_CHANGE_TS) && self.lock_type == Some(LockType::Lock) {
-            lock = lock.set_last_change(self.last_change);
+            lock = lock.set_last_change(self.last_change.clone());
         }
 
         if let Some(value) = self.value {
@@ -624,7 +649,7 @@ impl<'a> PrewriteMutation<'a> {
             lock.use_one_pc = true;
         }
 
-        let final_min_commit_ts = if lock.use_async_commit || try_one_pc {
+        let mut final_min_commit_ts = if lock.use_async_commit || try_one_pc {
             let res = async_commit_timestamps(
                 &self.key,
                 &mut lock,
@@ -644,6 +669,77 @@ impl<'a> PrewriteMutation<'a> {
         } else {
             Ok(TimeStamp::zero())
         };
+
+        // safety check for shared lock.
+        if self.is_shared_lock {
+            debug_assert_eq!(self.lock_type, Some(LockType::Shared));
+            debug_assert_eq!(lock.lock_type, LockType::Shared);
+            if generation > 0 {
+                return Err(box_err!(
+                    "shared lock prewrite does not support non-zero generation, generation: {}",
+                    generation
+                ));
+            }
+            if try_one_pc {
+                return Err(box_err!(
+                    "shared lock prewrite is incompatible with one-phase commit"
+                ));
+            }
+            if lock.use_async_commit {
+                // Shared locks cannot carry async-commit metadata. Fall back to
+                // normal 2PC by stripping the async-commit flag and ignoring the
+                // calculated min-commit timestamp.
+                lock.use_async_commit = false;
+                lock.secondaries.clear();
+                final_min_commit_ts = Ok(TimeStamp::zero());
+            }
+            let mut sub_lock = Lock::new(
+                LockType::Lock,
+                self.txn_props.primary.to_vec(),
+                self.txn_props.start_ts,
+                self.lock_ttl,
+                None,
+                self.txn_props.for_update_ts(),
+                self.txn_props.txn_size,
+                self.min_commit_ts,
+                false,
+            )
+            .set_txn_source(self.txn_props.txn_source)
+            .with_generation(generation);
+            if tls_can_enable(LAST_CHANGE_TS) {
+                sub_lock = sub_lock.set_last_change(self.last_change.clone());
+            }
+            debug_assert_eq!(sub_lock.lock_type, LockType::Lock);
+
+            lock = match current_lock {
+                Some(mut shared_lock) => {
+                    if !shared_lock.is_shared() {
+                        return Err(box_err!(
+                            "shared lock prewrite requires existing shared lock"
+                        ));
+                    }
+                    shared_lock.put_shared_lock(sub_lock);
+                    debug_assert!(
+                        matches!(
+                            shared_lock
+                                .find_shared_lock_txn(self.txn_props.start_ts)
+                                .map(|l| l.lock_type),
+                            Some(LockType::Lock)
+                        ),
+                        "shared lock sub lock stored as {:?}",
+                        shared_lock
+                            .find_shared_lock_txn(self.txn_props.start_ts)
+                            .map(|l| l.lock_type)
+                    );
+                    shared_lock
+                }
+                None => {
+                    return Err(box_err!(
+                        "shared lock prewrite requires existing lock, but not found"
+                    ));
+                }
+            };
+        }
 
         if try_one_pc {
             txn.put_locks_for_1pc(self.key, lock, lock_status.has_pessimistic_lock());
@@ -927,13 +1023,13 @@ pub mod tests {
     use std::sync::Arc;
 
     use concurrency_manager::ConcurrencyManager;
-    use kvproto::kvrpcpb::Context;
+    use kvproto::kvrpcpb::{Assertion, Context};
     #[cfg(test)]
     use rand::{Rng, SeedableRng};
     #[cfg(test)]
     use tikv_kv::RocksEngine;
     #[cfg(test)]
-    use txn_types::{OldValue, TsSet};
+    use txn_types::{OldValue, PessimisticLock, TsSet};
 
     use super::*;
     #[cfg(test)]
@@ -944,7 +1040,10 @@ pub mod tests {
             commands::prewrite::fallback_1pc_locks, tests::*,
         },
     };
-    use crate::storage::{mvcc::tests::*, Engine};
+    use crate::storage::{
+        mvcc::{tests::*, MvccReader},
+        Engine,
+    };
 
     fn optimistic_txn_props(primary: &[u8], start_ts: TimeStamp) -> TransactionProperties<'_> {
         TransactionProperties {
@@ -987,6 +1086,61 @@ pub mod tests {
             assertion_level: AssertionLevel::Off,
             txn_source: 0,
         }
+    }
+
+    fn shared_pessimistic_props(
+        primary: &[u8],
+        start_ts: TimeStamp,
+        for_update_ts: TimeStamp,
+        lock_ttl: u64,
+    ) -> TransactionProperties<'_> {
+        TransactionProperties {
+            start_ts,
+            kind: TransactionKind::Pessimistic(for_update_ts),
+            commit_kind: CommitKind::TwoPc,
+            primary,
+            txn_size: 0,
+            lock_ttl,
+            min_commit_ts: TimeStamp::zero(),
+            need_old_value: false,
+            is_retry_request: false,
+            assertion_level: AssertionLevel::Off,
+            txn_source: 0,
+        }
+    }
+
+    fn shared_mutation(key: &[u8]) -> Mutation {
+        Mutation::Shared(Key::from_raw(key), Assertion::None)
+    }
+
+    #[test]
+    fn test_shared_mutation_returns_shared_lock_type() {
+        let mutation = shared_mutation(b"check");
+        assert_eq!(LockType::from_mutation(&mutation), Some(LockType::Shared));
+    }
+
+    #[cfg(test)]
+    fn prepare_shared_pessimistic_lock<E: Engine>(
+        engine: &mut E,
+        key: &[u8],
+        pk: &[u8],
+        start_ts: TimeStamp,
+        for_update_ts: TimeStamp,
+    ) {
+        let ctx = Context::default();
+        let cm = ConcurrencyManager::new(for_update_ts);
+        let mut txn = MvccTxn::new(start_ts, cm);
+        let pessimistic_lock = PessimisticLock {
+            primary: pk.to_vec().into_boxed_slice(),
+            start_ts,
+            ttl: 2000,
+            for_update_ts,
+            min_commit_ts: TimeStamp::zero(),
+            last_change: LastChange::Unknown,
+            is_locked_with_conflict: false,
+        };
+        txn.put_shared_pessimistic_lock(Key::from_raw(key), None, pessimistic_lock);
+        write(engine, &ctx, txn.into_modifies());
     }
 
     // Insert has a constraint that key should not exist
@@ -2765,6 +2919,248 @@ pub mod tests {
         must_unlocked(&mut engine, key);
         prewrite_err(&mut engine, key, value, key, 120, 130, Some(130));
         must_unlocked(&mut engine, key);
+    }
+
+    #[test]
+    fn test_prewrite_shared_lock_merges_sub_lock() {
+        let mut engine = crate::storage::TestEngineBuilder::new().build().unwrap();
+        let key = b"shared-lock-merge";
+        let pk = b"shared-lock-merge";
+        let start_ts = TimeStamp::from(10);
+        let for_update_ts = TimeStamp::from(20);
+
+        prepare_shared_pessimistic_lock(&mut engine, key, pk, start_ts, for_update_ts);
+
+        let snapshot = engine.snapshot(Default::default()).unwrap();
+        let cm = ConcurrencyManager::new(for_update_ts);
+        let mut txn = MvccTxn::new(start_ts, cm);
+        let mut reader = SnapshotReader::new(start_ts, snapshot, true);
+
+        let props = shared_pessimistic_props(pk, start_ts, for_update_ts, 2000);
+        let ctx = Context::default();
+        let (min_commit_ts, old_value) = prewrite(
+            &mut txn,
+            &mut reader,
+            &props,
+            shared_mutation(key),
+            &None,
+            DoPessimisticCheck,
+            None,
+        )
+        .unwrap();
+        assert_eq!(min_commit_ts, TimeStamp::zero());
+        assert_eq!(old_value, OldValue::Unspecified);
+
+        write(&engine, &ctx, txn.into_modifies());
+
+        let shared_lock = {
+            let snapshot = engine.snapshot(Default::default()).unwrap();
+            let mut reader = MvccReader::new(snapshot, None, true);
+            reader
+                .load_lock(&Key::from_raw(key))
+                .unwrap()
+                .expect("shared lock should exist")
+        };
+        assert!(shared_lock.is_shared());
+        assert_eq!(shared_lock.shared_lock_num(), 1);
+        let sub_lock = shared_lock
+            .find_shared_lock_txn(start_ts)
+            .expect("sub lock missing");
+        assert_eq!(sub_lock.lock_type, LockType::Lock);
+        assert_eq!(sub_lock.primary, pk);
+        assert_eq!(sub_lock.for_update_ts, for_update_ts);
+        assert_eq!(sub_lock.ttl, props.lock_ttl);
+    }
+
+    #[test]
+    fn test_prewrite_shared_lock_requires_existing_lock() {
+        let mut engine = crate::storage::TestEngineBuilder::new().build().unwrap();
+        let key = b"shared-lock-missing";
+        let pk = b"shared-lock-missing";
+        let start_ts = TimeStamp::from(5);
+        let for_update_ts = TimeStamp::from(5);
+
+        let snapshot = engine.snapshot(Default::default()).unwrap();
+        let cm = ConcurrencyManager::new(for_update_ts);
+        let mut txn = MvccTxn::new(start_ts, cm);
+        let mut reader = SnapshotReader::new(start_ts, snapshot, true);
+
+        let props = shared_pessimistic_props(pk, start_ts, for_update_ts, 100);
+        let err = prewrite(
+            &mut txn,
+            &mut reader,
+            &props,
+            shared_mutation(key),
+            &None,
+            DoPessimisticCheck,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("shared lock prewrite requires existing lock")
+        );
+    }
+
+    #[test]
+    fn test_prewrite_shared_lock_rejects_non_shared_lock() {
+        let mut engine = crate::storage::TestEngineBuilder::new().build().unwrap();
+        let key = b"shared-lock-non-shared";
+        let pk = b"shared-lock-non-shared";
+        let start_ts = TimeStamp::from(12);
+        let for_update_ts = TimeStamp::from(12);
+
+        must_prewrite_lock(&mut engine, key, pk, start_ts);
+
+        let existing_lock = {
+            let snapshot = engine.snapshot(Default::default()).unwrap();
+            let mut reader = MvccReader::new(snapshot, None, true);
+            reader
+                .load_lock(&Key::from_raw(key))
+                .unwrap()
+                .expect("lock should exist")
+        };
+        assert!(!existing_lock.is_shared());
+
+        let snapshot = engine.snapshot(Default::default()).unwrap();
+        let cm = ConcurrencyManager::new(for_update_ts);
+        let mut txn = MvccTxn::new(start_ts, cm);
+        let mut reader = SnapshotReader::new(start_ts, snapshot, true);
+
+        let props = shared_pessimistic_props(pk, start_ts, for_update_ts, 100);
+        let err = prewrite(
+            &mut txn,
+            &mut reader,
+            &props,
+            shared_mutation(key),
+            &None,
+            DoPessimisticCheck,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("shared lock prewrite requires existing shared lock")
+        );
+    }
+
+    #[test]
+    fn test_prewrite_shared_lock_strips_async_commit() {
+        let mut engine = crate::storage::TestEngineBuilder::new().build().unwrap();
+        let key = b"shared-lock-async";
+        let pk = b"shared-lock-async";
+        let start_ts = TimeStamp::from(30);
+        let for_update_ts = TimeStamp::from(40);
+
+        prepare_shared_pessimistic_lock(&mut engine, key, pk, start_ts, for_update_ts);
+
+        let snapshot = engine.snapshot(Default::default()).unwrap();
+        let cm = ConcurrencyManager::new(for_update_ts);
+        let mut txn = MvccTxn::new(start_ts, cm);
+        let mut reader = SnapshotReader::new(start_ts, snapshot, true);
+
+        let mut props = shared_pessimistic_props(pk, start_ts, for_update_ts, 100);
+        props.commit_kind = CommitKind::Async(50.into());
+
+        let ctx = Context::default();
+        let (min_commit_ts, old_value) = prewrite(
+            &mut txn,
+            &mut reader,
+            &props,
+            shared_mutation(key),
+            &Some(vec![b"s".to_vec()]),
+            DoPessimisticCheck,
+            None,
+        )
+        .unwrap();
+        assert!(min_commit_ts.is_zero());
+        assert_eq!(old_value, OldValue::Unspecified);
+
+        write(&engine, &ctx, txn.into_modifies());
+
+        let shared_lock = {
+            let snapshot = engine.snapshot(Default::default()).unwrap();
+            let mut reader = MvccReader::new(snapshot, None, true);
+            reader
+                .load_lock(&Key::from_raw(key))
+                .unwrap()
+                .expect("shared lock should exist")
+        };
+        assert!(shared_lock.is_shared());
+        assert!(!shared_lock.use_async_commit);
+        assert!(shared_lock.secondaries.is_empty());
+        assert_eq!(shared_lock.shared_lock_num(), 1);
+        assert!(
+            shared_lock.find_shared_lock_txn(start_ts).is_some(),
+            "sub lock for shared prewrite missing"
+        );
+    }
+
+    #[test]
+    fn test_prewrite_shared_lock_rejects_one_pc() {
+        let mut engine = crate::storage::TestEngineBuilder::new().build().unwrap();
+        let key = b"shared-lock-1pc";
+        let pk = b"shared-lock-1pc";
+        let start_ts = TimeStamp::from(50);
+        let for_update_ts = TimeStamp::from(70);
+
+        prepare_shared_pessimistic_lock(&mut engine, key, pk, start_ts, for_update_ts);
+
+        let snapshot = engine.snapshot(Default::default()).unwrap();
+        let cm = ConcurrencyManager::new(for_update_ts);
+        let mut txn = MvccTxn::new(start_ts, cm);
+        let mut reader = SnapshotReader::new(start_ts, snapshot, true);
+
+        let mut props = shared_pessimistic_props(pk, start_ts, for_update_ts, 100);
+        props.commit_kind = CommitKind::OnePc(for_update_ts.next());
+
+        let err = prewrite(
+            &mut txn,
+            &mut reader,
+            &props,
+            shared_mutation(key),
+            &None,
+            DoPessimisticCheck,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("shared lock prewrite is incompatible with one-phase commit")
+        );
+    }
+
+    #[test]
+    fn test_prewrite_shared_lock_rejects_generation() {
+        let mut engine = crate::storage::TestEngineBuilder::new().build().unwrap();
+        let key = b"shared-lock-generation";
+        let pk = b"shared-lock-generation";
+        let start_ts = TimeStamp::from(60);
+        let for_update_ts = TimeStamp::from(65);
+
+        prepare_shared_pessimistic_lock(&mut engine, key, pk, start_ts, for_update_ts);
+
+        let snapshot = engine.snapshot(Default::default()).unwrap();
+        let cm = ConcurrencyManager::new(for_update_ts);
+        let mut txn = MvccTxn::new(start_ts, cm);
+        let mut reader = SnapshotReader::new(start_ts, snapshot, true);
+
+        let props = shared_pessimistic_props(pk, start_ts, for_update_ts, 100);
+        let err = prewrite_with_generation(
+            &mut txn,
+            &mut reader,
+            &props,
+            shared_mutation(key),
+            &None,
+            DoPessimisticCheck,
+            None,
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("shared lock prewrite does not support non-zero generation")
+        );
     }
 
     #[test]
