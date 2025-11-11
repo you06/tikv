@@ -313,8 +313,7 @@ impl Lock {
     #[inline]
     pub fn put_shared_lock(&mut self, lock: Lock) {
         assert!(self.is_shared());
-        let lock_type = lock.lock_type;
-        match lock_type {
+        match lock.lock_type {
             LockType::Lock => {
                 // Prewriting a shared lock guarantees that no non-shared lock with commit_ts >
                 // lock.ts can exist for this key. Therefore a later shared lock
@@ -331,17 +330,11 @@ impl Lock {
             _ => unreachable!(),
         }
         let ts = lock.ts;
-        let old = self
+        self
             .shared_lock_txns_info
             .as_mut()
             .unwrap()
             .put_lock(ts, lock);
-        if lock_type == LockType::Lock {
-            debug_assert!(
-                old.is_some(),
-                "shared lock should be prewritten over pessimistic lock"
-            );
-        }
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {

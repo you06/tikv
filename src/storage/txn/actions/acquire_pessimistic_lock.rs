@@ -476,7 +476,7 @@ pub mod tests {
     use kvproto::kvrpcpb::Context;
     #[cfg(test)]
     use kvproto::kvrpcpb::PrewriteRequestPessimisticAction::*;
-    use txn_types::{Lock, TimeStamp};
+    use txn_types::{Lock, LockType, TimeStamp};
 
     use super::*;
     use crate::storage::{
