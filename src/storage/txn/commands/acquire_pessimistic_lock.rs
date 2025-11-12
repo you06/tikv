@@ -141,6 +141,7 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for AcquirePessimisticLock 
                         request_parameters,
                         k,
                         should_not_exist,
+                        is_shared_lock,
                     );
                     encountered_locks.push(lock_info);
                     // Do not lock previously succeeded keys.

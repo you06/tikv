@@ -1836,31 +1836,76 @@ fn test_raw_put_deadline() {
     must_get_equal(&cluster.get_engine(1), b"k3", b"v3");
 }
 
-
 #[test]
+#[allow(unused)]
 fn test_shared_lock_multiple_holders() {
     let storage = TestStorageBuilderApiV1::new(MockLockManager::new())
         .build()
         .unwrap();
-    let raw_key = b"shared-lock-basic";
-    let key = Key::from_raw(raw_key);
+    let shared_key = b"shared-lock-key".to_vec();
+    let pk = b"shared-lock-pk".to_vec();
 
-    let acquire_shared = |start_ts: u64| {
-        let (done_tx, done_rx) = channel::<i32>();
+    let acquire_lock = |start_ts: u64, is_shared_lock: bool| {
+        let (done_tx, done_rx) = channel();
         storage
             .sched_txn_command(
                 new_acquire_pessimistic_lock_command_with_pk_with_shared(
-                    vec![(key.clone(), false, true)],
+                    vec![(Key::from_raw(&shared_key), false, is_shared_lock)],
+                    Some(&pk.clone()),
+                    start_ts,
+                    start_ts,
+                    false,
+                    false,
+                ),
+                Box::new(
+                    move |res: storage::Result<
+                        std::result::Result<PessimisticLockResults, StorageError>,
+                    >| done_tx.send(res).unwrap(),
+                ),
+            )
+            .unwrap();
+        done_rx
+    };
+
+    let prewrite = |start_ts: u64| {
+        let (done_tx, done_rx) = channel::<i32>();
+        storage
+            .sched_txn_command(
+                commands::PrewritePessimistic::new(
+                    vec![(
+                        Mutation::make_put(Key::from_raw(&shared_key), shared_key.clone()),
+                        DoPessimisticCheck,
+                    )],
+                    pk.clone(),
+                    start_ts.into(),
+                    3000,
+                    start_ts.into(),
+                    1,
+                    TimeStamp::default(),
+                    TimeStamp::default(),
                     None,
-                    start_ts,
-                    start_ts,
                     false,
-                    false,
+                    AssertionLevel::Off,
+                    vec![],
+                    Context::default(),
                 ),
-                done_tx,
-                expect_pessimistic_lock_res_callback(
-                    PessimisticLockResults(vec![PessimisticLockKeyResult::Empty]),
+                expect_ok_callback(done_tx, 0),
+            )
+            .unwrap();
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    };
+
+    let commit = |start_ts: u64, commit_ts: u64| {
+        let (done_tx, done_rx) = channel::<i32>();
+        storage
+            .sched_txn_command(
+                commands::Commit::new(
+                    vec![Key::from_raw(&shared_key)],
+                    start_ts.into(),
+                    commit_ts.into(),
+                    Context::default(),
                 ),
+                expect_ok_callback(done_tx, 0),
             )
             .unwrap();
         done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1871,12 +1916,12 @@ fn test_shared_lock_multiple_holders() {
         let snapshot = engine.snapshot(Default::default()).unwrap();
         let mut reader = MvccReader::new(snapshot, None, true);
         reader
-            .load_lock(&key)
+            .load_lock(&Key::from_raw(&shared_key))
             .unwrap()
             .expect("shared lock should exist")
     };
 
-    acquire_shared(10);
+    acquire_lock(10, true).recv().unwrap().unwrap();
     let mut shared_lock = load_shared_lock();
     assert!(shared_lock.is_shared());
     assert_eq!(shared_lock.shared_lock_num(), 1);
@@ -1886,19 +1931,87 @@ fn test_shared_lock_multiple_holders() {
             .is_some()
     );
 
+    // exclusive lock blocked.
+    let exclusive_lock = acquire_lock(30, false);
+    exclusive_lock
+        .recv_timeout(Duration::from_millis(100))
+        .unwrap_err();
+
     // Re-acquiring the same transaction should be idempotent.
-    acquire_shared(10);
+    acquire_lock(10, true).recv().unwrap().unwrap();
     let shared_lock = load_shared_lock();
     assert_eq!(shared_lock.shared_lock_num(), 1);
 
     // A different transaction should be merged into the same shared lock entry.
-    acquire_shared(20);
+    acquire_lock(20, true).recv().unwrap().unwrap();
     let mut shared_lock = load_shared_lock();
     assert!(shared_lock.is_shared());
     assert_eq!(shared_lock.shared_lock_num(), 2);
     assert!(
         shared_lock
+            .find_shared_lock_txn(TimeStamp::from(10))
+            .is_some()
+    );
+    assert!(
+        shared_lock
             .find_shared_lock_txn(TimeStamp::from(20))
             .is_some()
     );
+
+    exclusive_lock
+        .recv_timeout(Duration::from_millis(100))
+        .unwrap_err();
+
+    prewrite(10);
+    prewrite(20);
+    commit(10, 15);
+    commit(20, 25);
+
+    // acquire pessimistic lock return conflict after all shared lock txns are
+    // committed.
+    assert!(matches!(
+        exclusive_lock
+            .recv_timeout(Duration::from_millis(100))
+            .unwrap()
+            .unwrap_err(),
+        storage::Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(mvcc::Error(
+            box mvcc::ErrorInner::WriteConflict { .. },
+        ))))),
+    ));
+
+    // acquire pessimistic lock again after exclusive lock failed.
+    acquire_lock(40, false)
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+
+    // shared locks should be blocked by exclusive lock.
+    let shared_lock1 = acquire_lock(50, true);
+    let shared_lock2 = acquire_lock(60, true);
+    shared_lock1
+        .recv_timeout(Duration::from_millis(100))
+        .unwrap_err();
+    shared_lock2
+        .recv_timeout(Duration::from_millis(100))
+        .unwrap_err();
+
+    prewrite(40);
+    commit(40, 70);
+
+    // acquire shared lock return conflict after exclusive lock is committed.
+    for shared_lock in &[shared_lock1, shared_lock2] {
+        assert!(matches!(
+            shared_lock
+                .recv_timeout(Duration::from_millis(100))
+                .unwrap()
+                .unwrap_err(),
+            storage::Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(mvcc::Error(
+                box mvcc::ErrorInner::WriteConflict { .. },
+            ))))),
+        ));
+    }
+
+    // Now exclusive lock is committed, new shared locks can be acquired.
+    acquire_lock(80, true).recv().unwrap().unwrap();
+    acquire_lock(90, true).recv().unwrap().unwrap();
 }

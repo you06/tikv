@@ -874,10 +874,7 @@ pub mod tests {
         );
     }
 
-    pub fn must_load_shared_lock<E: Engine>(
-        engine: &mut E,
-        key: &[u8],
-    ) -> Lock {
+    pub fn must_load_shared_lock<E: Engine>(engine: &mut E, key: &[u8]) -> Lock {
         let snapshot = engine.snapshot(Default::default()).unwrap();
         let mut reader = MvccReader::new(snapshot, None, true);
         let lock = reader.load_lock(&Key::from_raw(key)).unwrap().unwrap();

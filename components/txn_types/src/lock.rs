@@ -288,7 +288,6 @@ impl Lock {
             .and_then(|info| info.get_lock(&start_ts))
     }
 
-
     #[inline]
     #[must_use]
     pub fn remove_shared_lock(&mut self, start_ts: TimeStamp) -> Option<Lock> {
@@ -297,7 +296,7 @@ impl Lock {
                 return info.remove_lock(&start_ts);
             }
         }
-        return None;
+        None
     }
 
     #[inline]
@@ -330,8 +329,7 @@ impl Lock {
             _ => unreachable!(),
         }
         let ts = lock.ts;
-        self
-            .shared_lock_txns_info
+        self.shared_lock_txns_info
             .as_mut()
             .unwrap()
             .put_lock(ts, lock);
@@ -833,9 +831,9 @@ impl SharedLockTxnsInfo {
     pub fn remove_lock(&mut self, ts: &TimeStamp) -> Option<Lock> {
         if let Some(either) = self.txn_info_segments.remove(ts) {
             match either {
-                Either::Left(encoded) => Some(
-                    Lock::parse(&encoded).expect("failed to parse shared lock txn info"),
-                ),
+                Either::Left(encoded) => {
+                    Some(Lock::parse(&encoded).expect("failed to parse shared lock txn info"))
+                }
                 Either::Right(lock) => Some(lock),
             }
         } else {

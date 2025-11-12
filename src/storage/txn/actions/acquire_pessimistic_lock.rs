@@ -200,7 +200,7 @@ pub fn acquire_pessimistic_lock<S: Snapshot>(
                 ),
                 old_value,
             ));
-        } else if let Some(existing_sub_lock) =  lock.find_shared_lock_txn(reader.start_ts) {
+        } else if let Some(existing_sub_lock) = lock.find_shared_lock_txn(reader.start_ts) {
             let requested_for_update_ts = for_update_ts;
             let locked_with_conflict_ts =
                 if allow_lock_with_conflict && for_update_ts < existing_sub_lock.for_update_ts {
@@ -476,7 +476,7 @@ pub mod tests {
     use kvproto::kvrpcpb::Context;
     #[cfg(test)]
     use kvproto::kvrpcpb::PrewriteRequestPessimisticAction::*;
-    use txn_types::{Lock, LockType, TimeStamp};
+    use txn_types::{Lock, TimeStamp};
 
     use super::*;
     use crate::storage::{
@@ -2652,7 +2652,7 @@ pub mod tests {
         let sub_lock = shared_lock
             .find_shared_lock_txn(start_ts)
             .expect("sub lock should exist");
-        assert_eq!(sub_lock.lock_type, LockType::Pessimistic);
+        assert_eq!(sub_lock.lock_type, txn_types::LockType::Pessimistic);
         assert_eq!(sub_lock.primary, pk);
         assert_eq!(sub_lock.for_update_ts, for_update_ts);
     }
@@ -2682,14 +2682,14 @@ pub mod tests {
         let first = shared_lock
             .find_shared_lock_txn(start_one)
             .expect("first sub lock missing");
-        assert_eq!(first.lock_type, LockType::Pessimistic);
+        assert_eq!(first.lock_type, txn_types::LockType::Pessimistic);
         assert_eq!(first.for_update_ts, for_update_one);
         assert_eq!(first.primary, pk_one);
 
         let second = shared_lock
             .find_shared_lock_txn(start_two)
             .expect("second sub lock missing");
-        assert_eq!(second.lock_type, LockType::Pessimistic);
+        assert_eq!(second.lock_type, txn_types::LockType::Pessimistic);
         assert_eq!(second.for_update_ts, for_update_two);
         assert_eq!(second.primary, pk_two);
     }
@@ -2712,7 +2712,7 @@ pub mod tests {
         let sub_lock = shared_lock
             .find_shared_lock_txn(start_ts)
             .expect("sub lock should exist");
-        assert_eq!(sub_lock.lock_type, LockType::Pessimistic);
+        assert_eq!(sub_lock.lock_type, txn_types::LockType::Pessimistic);
         assert_eq!(sub_lock.primary, pk);
         assert_eq!(sub_lock.for_update_ts, for_update_ts);
         assert_eq!(shared_lock.for_update_ts, for_update_ts);
