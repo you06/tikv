@@ -945,7 +945,7 @@ pub mod test_util {
             } if !locks.is_empty() => {
                 let info = LockInfo::default();
                 return Err(Error::from(ErrorInner::Mvcc(MvccError::from(
-                    MvccErrorInner::KeyIsLocked(info),
+                    MvccErrorInner::KeyIsLocked(tikv_util::Either::Left(info)),
                 ))));
             }
             ProcessResult::PrewriteResult { result } => result,

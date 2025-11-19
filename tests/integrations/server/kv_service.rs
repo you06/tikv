@@ -2053,7 +2053,7 @@ fn test_batch_get_memory_lock() {
         req.set_keys(vec![b"unlocked".to_vec(), raw_key.clone()].into());
         req.version = 50;
         let resp = client.kv_batch_get(&req).unwrap();
-        let lock_info = lock.into_lock_info(raw_key);
+        let lock_info = lock.into_lock_info(raw_key).unwrap().left().unwrap();
         assert_eq!(resp.pairs[0].get_error().get_locked(), &lock_info);
         assert_eq!(resp.get_error().get_locked(), &lock_info);
     });
@@ -2070,7 +2070,7 @@ fn test_kv_scan_memory_lock() {
         req.set_start_key(b"a".to_vec());
         req.version = 50;
         let resp = client.kv_scan(&req).unwrap();
-        let lock_info = lock.into_lock_info(raw_key);
+        let lock_info = lock.into_lock_info(raw_key).unwrap().left().unwrap();
         assert_eq!(resp.pairs[0].get_error().get_locked(), &lock_info);
         assert_eq!(resp.get_error().get_locked(), &lock_info);
     });

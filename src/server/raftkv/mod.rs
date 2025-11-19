@@ -56,6 +56,7 @@ use tikv_util::{
     callback::must_call,
     future::{paired_future_callback, paired_must_called_future_callback},
     time::Instant,
+    Either,
 };
 use tracker::{get_tls_tracker_token, GLOBAL_TRACKERS};
 use txn_types::{Key, TimeStamp, TxnExtra, TxnExtraScheduler, WriteBatchFlags};
@@ -777,7 +778,7 @@ where
                     .unwrap_or(false)
                 {
                     let locked = r[0].take_read_index().take_locked();
-                    KvError::from(KvErrorInner::KeyIsLocked(locked))
+                    KvError::from(KvErrorInner::KeyIsLocked(Either::Left(locked)))
                 } else {
                     invalid_resp_type(CmdType::Snap, r[0].get_cmd_type()).into()
                 };
@@ -860,7 +861,9 @@ impl ReadIndexObserver for ReplicaReadLockChecker {
                     },
                 );
                 if let Err(txn_types::Error(box txn_types::ErrorInner::KeyIsLocked(lock))) = res {
-                    rctx.locked = Some(lock);
+                    if let Some(lock_info) = lock.into_vec().into_iter().next() {
+                        rctx.locked = Some(lock_info);
+                    }
                     REPLICA_READ_LOCK_CHECK_HISTOGRAM_VEC_STATIC
                         .locked
                         .observe(begin_instant.saturating_elapsed().as_secs_f64());

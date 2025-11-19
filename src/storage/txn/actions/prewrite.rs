@@ -9,6 +9,7 @@ use kvproto::kvrpcpb::{
     PrewriteRequestPessimisticAction::{self, *},
     WriteConflictReason,
 };
+use tikv_util::Either;
 use txn_types::{
     is_short_value, Key, LastChange, Mutation, MutationType, OldValue, TimeStamp, Value, Write,
     WriteType,
@@ -382,22 +383,19 @@ impl<'a> PrewriteMutation<'a> {
     // until pessimistic prewrite. It's possible that lock conflict occurs on
     // them, but the isolation is guaranteed by pessimistic locks, so let TiDB
     // resolves these locks immediately.
-    fn lock_info(&self, lock: Lock) -> Result<LockInfo> {
-        let mut info = lock.into_lock_info(self.key.to_raw()?);
+    fn lock_info(&self, lock: Lock) -> Result<Either<LockInfo, Vec<LockInfo>>> {
+        let mut info = lock.into_lock_info(self.key.to_raw()?)?;
         if self.txn_props.is_pessimistic() {
-            info.set_lock_ttl(0);
-        }
-        Ok(info)
-    }
-
-    fn shared_lock_info(&self, lock: Lock) -> Result<Vec<LockInfo>> {
-        let mut infos = lock.into_shared_lock_infos(self.key.to_raw()?)?;
-        if self.txn_props.is_pessimistic() {
-            for info in &mut infos {
-                info.set_lock_ttl(0);
+            match info.as_mut() {
+                Either::Left(lock) => lock.set_lock_ttl(0),
+                Either::Right(locks) => {
+                    for lock in locks {
+                        lock.set_lock_ttl(0);
+                    }
+                }
             }
         }
-        Ok(infos)
+        Ok(info)
     }
 
     /// Check whether the current key is locked at any timestamp.
@@ -426,9 +424,6 @@ impl<'a> PrewriteMutation<'a> {
                 .into());
             }
 
-            if lock.is_shared() {
-                return Err(ErrorInner::KeyIsSharedLocked(self.shared_lock_info(lock)?).into());
-            }
             return Err(ErrorInner::KeyIsLocked(self.lock_info(lock)?).into());
         }
 
@@ -747,7 +742,7 @@ impl<'a> PrewriteMutation<'a> {
         if try_one_pc {
             txn.put_locks_for_1pc(self.key, lock, lock_status.has_pessimistic_lock());
         } else {
-            txn.put_lock(self.key, &lock, is_new_lock);
+            txn.put_lock(self.key, &lock, is_new_lock)?;
         }
 
         final_min_commit_ts
@@ -1130,7 +1125,8 @@ pub mod tests {
             last_change: LastChange::Unknown,
             is_locked_with_conflict: false,
         };
-        txn.put_shared_pessimistic_lock(Key::from_raw(key), None, pessimistic_lock);
+        txn.put_shared_pessimistic_lock(Key::from_raw(key), None, pessimistic_lock)
+            .unwrap();
         write(engine, &ctx, txn.into_modifies());
     }
 
@@ -1420,7 +1416,7 @@ pub mod tests {
             Error(box ErrorInner::CommitTsTooLarge { .. })
         ));
 
-        fallback_1pc_locks(&mut txn);
+        fallback_1pc_locks(&mut txn).unwrap();
         let modifies = txn.into_modifies();
         assert_eq!(modifies.len(), 2); // the mutation that meets CommitTsTooLarge still exists
         write(&engine, &Default::default(), modifies);
@@ -3152,14 +3148,14 @@ pub mod tests {
         // TODO: optimistic prewrite should return all the locks inside a shared lock.
         let err = prewrite(false, TimeStamp::from(20)).unwrap_err();
         assert!(
-            matches!(err, Error(box ErrorInner::KeyIsLocked { .. })),
+            matches!(err, Error(box ErrorInner::KeyIsLocked(_))),
             "{:?}",
             err
         );
         prewrite(true, start_ts).unwrap();
         let err = prewrite(false, TimeStamp::from(30)).unwrap_err();
         assert!(
-            matches!(err, Error(box ErrorInner::KeyIsLocked { .. })),
+            matches!(err, Error(box ErrorInner::KeyIsLocked(_))),
             "{:?}",
             err
         );

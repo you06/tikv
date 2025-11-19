@@ -91,10 +91,12 @@ pub fn acquire_pessimistic_lock<S: Snapshot>(
         if !is_shared_lock_req {
             // handle exclusive lock.
             if lock.is_shared() {
-                return Err(ErrorInner::KeyIsLocked(
-                    current_lock.unwrap().into_lock_info(key.into_raw()?),
-                )
-                .into());
+                return Err(
+                    ErrorInner::KeyIsLocked(
+                        current_lock.unwrap().into_lock_info(key.into_raw()?)?,
+                    )
+                    .into(),
+                );
             }
             return handle_existing_exclusive_lock(
                 txn,
@@ -114,10 +116,12 @@ pub fn acquire_pessimistic_lock<S: Snapshot>(
         } else {
             // handle shared lock.
             if !lock.is_shared() {
-                return Err(ErrorInner::KeyIsLocked(
-                    current_lock.unwrap().into_lock_info(key.into_raw()?),
-                )
-                .into());
+                return Err(
+                    ErrorInner::KeyIsLocked(
+                        current_lock.unwrap().into_lock_info(key.into_raw()?)?,
+                    )
+                    .into(),
+                );
             }
             if lock.contains_start_ts(reader.start_ts) {
                 return handle_existing_shared_lock(
@@ -288,9 +292,9 @@ pub fn acquire_pessimistic_lock<S: Snapshot>(
     // When lock_only_if_exists is false, always acquire pessimistic lock, otherwise
     // do it when val exists
     if is_shared_lock_req {
-        txn.put_shared_pessimistic_lock(key, current_lock, lock);
+        txn.put_shared_pessimistic_lock(key, current_lock, lock)?;
     } else if !lock_only_if_exists || val.is_some() {
-        txn.put_pessimistic_lock(key, lock, true);
+        txn.put_pessimistic_lock(key, lock, true)?;
     } else if let Some(conflict_info) = conflict_info {
         return Err(conflict_info.into_write_conflict_error(
             reader.start_ts,
@@ -350,7 +354,7 @@ fn handle_existing_exclusive_lock<S: Snapshot>(
     lock: Lock,
 ) -> MvccResult<(PessimisticLockKeyResult, OldValue)> {
     if lock.ts != reader.start_ts {
-        return Err(ErrorInner::KeyIsLocked(lock.into_lock_info(key.into_raw()?)).into());
+        return Err(ErrorInner::KeyIsLocked(lock.into_lock_info(key.into_raw()?)?).into());
     }
     if !lock.is_pessimistic_lock() {
         return Err(ErrorInner::LockTypeNotMatch {
@@ -424,7 +428,7 @@ fn handle_existing_exclusive_lock<S: Snapshot>(
     };
 
     if for_update_ts > lock.for_update_ts {
-        txn.put_pessimistic_lock(key, lock_to_write, false);
+        txn.put_pessimistic_lock(key, lock_to_write, false)?;
     } else {
         MVCC_DUPLICATE_CMD_COUNTER_VEC
             .acquire_pessimistic_lock
@@ -494,7 +498,7 @@ fn handle_existing_shared_lock<S: Snapshot>(
             last_change,
             is_locked_with_conflict,
         };
-        txn.put_shared_pessimistic_lock(key, Some(lock), lock_to_write);
+        txn.put_shared_pessimistic_lock(key, Some(lock), lock_to_write)?;
     } else {
         MVCC_DUPLICATE_CMD_COUNTER_VEC
             .acquire_pessimistic_lock_shared

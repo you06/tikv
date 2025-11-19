@@ -188,7 +188,7 @@ pub fn prewrite_flashback_key(
             false,
         ),
         false, // Assuming flashback transactions won't participate any lock conflicts.
-    );
+    )?;
     Ok(())
 }
 

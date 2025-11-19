@@ -13,6 +13,7 @@ use collections::{HashMap, HashSet};
 use kvproto::{kvrpcpb::LockInfo, metapb::RegionEpoch};
 use parking_lot::Mutex;
 use tracker::TrackerToken;
+use tikv_util::Either;
 use txn_types::{Key, TimeStamp};
 
 pub use crate::storage::lock_manager::lock_wait_context::CancellationCallback;
@@ -226,14 +227,18 @@ impl MockLockManager {
     pub fn simulate_timeout_all(&self) {
         let mut map = self.waiters.lock();
         for (_, (wait_info, cancel_callback)) in map.drain() {
-            let error = MvccError::from(MvccErrorInner::KeyIsLocked(wait_info.lock_info));
+            let error = MvccError::from(MvccErrorInner::KeyIsLocked(Either::Left(
+                wait_info.lock_info,
+            )));
             cancel_callback(StorageError::from(TxnError::from(error)));
         }
     }
 
     pub fn simulate_timeout(&self, token: LockWaitToken) {
         if let Some((wait_info, cancel_callback)) = self.waiters.lock().remove(&token) {
-            let error = MvccError::from(MvccErrorInner::KeyIsLocked(wait_info.lock_info));
+            let error = MvccError::from(MvccErrorInner::KeyIsLocked(Either::Left(
+                wait_info.lock_info,
+            )));
             cancel_callback(StorageError::from(TxnError::from(error)));
         }
     }

@@ -6,8 +6,9 @@ use txn_types::{Key, Lock, WriteType};
 use crate::storage::{
     kv::WriteData,
     lock_manager::LockManager,
-    mvcc::{MvccTxn, OverlappedWrite, ReleasedLock, SnapshotReader, TimeStamp, TxnCommitRecord},
+    mvcc::{self, MvccTxn, OverlappedWrite, ReleasedLock, SnapshotReader, TimeStamp, TxnCommitRecord},
     txn::{
+        self,
         actions::check_txn_status::{collapse_prev_rollback, make_rollback},
         commands::{
             Command, CommandExt, ReaderWithStats, ReleasedLocks, ResponsePolicy, TypedCommand,
@@ -183,7 +184,7 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for CheckSecondaryLocks {
             // needs to be protected.
             if need_rollback {
                 if let Some(l) = mismatch_lock {
-                    txn.mark_rollback_on_mismatching_lock(&key, l, true);
+                    txn.mark_rollback_on_mismatching_lock(&key, l, true)?;
                 }
                 // We must protect this rollback in case this rollback is collapsed and a stale
                 // acquire_pessimistic_lock and prewrite succeed again.
@@ -195,7 +196,13 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for CheckSecondaryLocks {
             released_locks.push(released_lock);
             match status {
                 SecondaryLockStatus::Locked(lock) => {
-                    result.push(lock.into_lock_info(key.to_raw()?));
+                    let raw_key = key.to_raw()?;
+                    let lock_info = lock
+                        .into_lock_info(raw_key)
+                        .map_err(|e| txn::Error::from(mvcc::Error::from(e)))?;
+                    for info in lock_info.into_vec() {
+                        result.push(info);
+                    }
                 }
                 SecondaryLockStatus::Committed(commit_ts) => {
                     result = SecondaryLocksStatus::Committed(commit_ts);

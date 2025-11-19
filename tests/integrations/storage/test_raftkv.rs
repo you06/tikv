@@ -273,7 +273,10 @@ fn test_read_on_replica_check_memory_locks() {
         let mut follower_storage = cluster.sim.rl().storages[&follower_id].clone();
         match follower_storage.snapshot(follower_snap_ctx) {
             Err(Error(box ErrorInner::KeyIsLocked(lock_info))) => {
-                assert_eq!(lock_info, lock.clone().into_lock_info(raw_key.to_vec()))
+                assert_eq!(
+                    lock_info,
+                    lock.clone().into_lock_info(raw_key.to_vec()).unwrap()
+                )
             }
             other => panic!("unexpected result: {:?}", other),
         }

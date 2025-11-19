@@ -24,6 +24,7 @@ use tikv_util::{
     time::{duration_to_sec, InstantExt},
     timer::GLOBAL_TIMER_HANDLE,
     worker::{FutureRunnable, FutureScheduler, Stopped},
+    Either,
 };
 use tokio::task::spawn_local;
 use tracker::GLOBAL_TRACKERS;
@@ -274,7 +275,9 @@ impl Waiter {
                 .map(|t| (t.elapsed().as_millis() as u64).max(1))
                 .unwrap_or_default(),
         );
-        let error = MvccError::from(MvccErrorInner::KeyIsLocked(lock_info));
+        let error = MvccError::from(MvccErrorInner::KeyIsLocked(Either::Left(
+            lock_info,
+        )));
         self.cancel(Some(StorageError::from(TxnError::from(error))))
     }
 
@@ -283,7 +286,9 @@ impl Waiter {
         cancel_callback: CancellationCallback,
     ) {
         let lock_info = wait_info.lock_info;
-        let error = MvccError::from(MvccErrorInner::KeyIsLocked(lock_info));
+        let error = MvccError::from(MvccErrorInner::KeyIsLocked(Either::Left(
+            lock_info,
+        )));
         cancel_callback(StorageError::from(TxnError::from(error)))
     }
 
@@ -815,7 +820,7 @@ pub mod tests {
         match error {
             StorageError(box StorageErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(
                 MvccError(box MvccErrorInner::KeyIsLocked(res)),
-            )))) => assert_eq!(res, lock_info),
+            )))) => assert_eq!(res, Either::Left(lock_info)),
             e => panic!("unexpected error: {:?}", e),
         }
     }
@@ -1216,7 +1221,13 @@ pub mod tests {
                 StorageError(box StorageErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(
                     MvccError(box MvccErrorInner::KeyIsLocked(res)),
                 )))) => {
-                    assert_eq!(res.duration_to_last_update_ms, 0);
+                    match res {
+                        Either::Left(lock) => assert_eq!(lock.get_duration_to_last_update_ms(), 0),
+                        Either::Right(locks) => {
+                            assert_eq!(locks.len(), 1);
+                            assert_eq!(locks[0].get_duration_to_last_update_ms(), 0);
+                        }
+                    }
                 }
                 e => panic!("unexpected error: {:?}", e),
             },

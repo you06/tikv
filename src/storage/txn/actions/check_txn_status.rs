@@ -137,10 +137,11 @@ pub fn check_txn_status_lock_exists(
                     "rollback_if_not_exist" => rollback_if_not_exist,
                 );
                 // Return the current lock info to tell the client what the actual primary is.
-                Err(
-                    ErrorInner::PrimaryMismatch(lock.into_lock_info(primary_key.into_raw()?))
-                        .into(),
-                )
+                let lock_info = lock
+                    .into_lock_info(primary_key.into_raw()?)?
+                    .left()
+                    .expect("primary mismatch lock should not be shared");
+                Err(ErrorInner::PrimaryMismatch(lock_info).into())
             }
         };
     }
@@ -202,7 +203,7 @@ pub fn check_txn_status_lock_exists(
             lock.min_commit_ts = current_ts;
         }
 
-        txn.put_lock(primary_key, &lock, false);
+        txn.put_lock(primary_key, &lock, false)?;
         MVCC_CHECK_TXN_STATUS_COUNTER_VEC.update_ts.inc();
     }
 
@@ -283,7 +284,7 @@ pub fn check_txn_status_missing_lock(
                     &primary_key,
                     l,
                     action == MissingLockAction::ProtectedRollback,
-                );
+                )?;
             }
 
             // Insert a Rollback to Write CF in case that a stale prewrite

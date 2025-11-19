@@ -70,6 +70,7 @@ use keyed_priority_queue::KeyedPriorityQueue;
 use kvproto::kvrpcpb;
 use smallvec::SmallVec;
 use sync_wrapper::SyncWrapper;
+use tikv_util::Either;
 use tikv_util::{time::InstantExt, timer::GLOBAL_TIMER_HANDLE};
 use txn_types::{Key, TimeStamp};
 
@@ -304,7 +305,14 @@ impl<L: LockManager> LockWaitQueues<L> {
                 // Update the lock info in the error to the latest if possible.
                 let latest_lock_info = &key_state_entry.get().current_lock;
                 if !latest_lock_info.key.is_empty() {
-                    *lock_info = latest_lock_info.clone();
+                    match lock_info {
+                        Either::Left(info) => *info = latest_lock_info.clone(),
+                        Either::Right(locks) => {
+                            if let Some(first) = locks.first_mut() {
+                                *first = latest_lock_info.clone();
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -816,7 +824,7 @@ mod tests {
             let cancel_callback = dummy_ctx.get_callback_for_cancellation();
             let cancel = move || {
                 cancel_callback(StorageError::from(TxnError::from(MvccError::from(
-                    MvccErrorInner::KeyIsLocked(lock_info_pb),
+                    MvccErrorInner::KeyIsLocked(Either::Left(lock_info_pb)),
                 ))))
             };
 

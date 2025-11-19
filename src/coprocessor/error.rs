@@ -2,7 +2,7 @@
 
 use error_code::{self, ErrorCode, ErrorCodeExt};
 use thiserror::Error;
-use tikv_util::memory::MemoryQuotaExceeded;
+use tikv_util::{memory::MemoryQuotaExceeded, Either};
 
 use crate::{
     storage,
@@ -80,7 +80,9 @@ impl From<KvError> for Error {
     fn from(err: KvError) -> Self {
         match err {
             KvError(box KvErrorInner::Request(e)) => Error::Region(e),
-            KvError(box KvErrorInner::KeyIsLocked(lock_info)) => Error::Locked(lock_info),
+            KvError(box KvErrorInner::KeyIsLocked(lock_info)) => {
+                Error::Locked(into_single_lock(lock_info))
+            }
             e => Error::Other(e.to_string()),
         }
     }
@@ -89,7 +91,9 @@ impl From<KvError> for Error {
 impl From<MvccError> for Error {
     fn from(err: MvccError) -> Self {
         match err {
-            MvccError(box MvccErrorInner::KeyIsLocked(info)) => Error::Locked(info),
+            MvccError(box MvccErrorInner::KeyIsLocked(info)) => {
+                Error::Locked(into_single_lock(info))
+            }
             MvccError(box MvccErrorInner::Kv(kv_error)) => Error::from(kv_error),
             e => Error::Other(e.to_string()),
         }
@@ -109,6 +113,18 @@ impl From<TxnError> for Error {
 impl From<tikv_util::deadline::DeadlineError> for Error {
     fn from(_: tikv_util::deadline::DeadlineError) -> Self {
         Error::DeadlineExceeded
+    }
+}
+
+fn into_single_lock(
+    info: Either<kvproto::kvrpcpb::LockInfo, Vec<kvproto::kvrpcpb::LockInfo>>,
+) -> kvproto::kvrpcpb::LockInfo {
+    match info {
+        Either::Left(lock) => lock,
+        Either::Right(mut locks) => locks
+            .drain(..)
+            .next()
+            .expect("shared lock info should not be empty"),
     }
 }
 

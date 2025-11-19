@@ -13,7 +13,9 @@ use std::{error, io};
 use error_code::{self, ErrorCode, ErrorCodeExt};
 use kvproto::kvrpcpb::{self, Assertion, IsolationLevel};
 use thiserror::Error;
-use tikv_util::{metrics::CRITICAL_ERROR, panic_when_unexpected_key_or_data, set_panic_mark};
+use tikv_util::{
+    metrics::CRITICAL_ERROR, panic_when_unexpected_key_or_data, set_panic_mark, Either,
+};
 pub use txn_types::{
     Key, Lock, LockType, Mutation, TimeStamp, Value, Write, WriteRef, WriteType,
     SHORT_VALUE_MAX_LEN,
@@ -40,10 +42,7 @@ pub enum ErrorInner {
     Codec(#[from] tikv_util::codec::Error),
 
     #[error("key is locked (backoff or cleanup) {0:?}")]
-    KeyIsLocked(kvrpcpb::LockInfo),
-
-    #[error("key is shared locked (backoff or cleanup) {0:?}")]
-    KeyIsSharedLocked(Vec<kvrpcpb::LockInfo>),
+    KeyIsLocked(Either<kvrpcpb::LockInfo, Vec<kvrpcpb::LockInfo>>),
 
     #[error("{0}")]
     BadFormat(#[source] txn_types::Error),
@@ -328,9 +327,6 @@ impl ErrorInner {
                 ErrorInner::GenerationOutOfOrder(*gen, key.clone(), lock_info.clone()),
             ),
             ErrorInner::InvalidMaxTsUpdate(e) => Some(ErrorInner::InvalidMaxTsUpdate(e.clone())),
-            ErrorInner::KeyIsSharedLocked(locks) => {
-                Some(ErrorInner::KeyIsSharedLocked(locks.clone()))
-            }
             ErrorInner::Io(_) | ErrorInner::Other(_) => None,
         }
     }
@@ -412,9 +408,7 @@ impl ErrorCodeExt for Error {
             ErrorInner::Kv(e) => e.error_code(),
             ErrorInner::Io(_) => error_code::storage::IO,
             ErrorInner::Codec(e) => e.error_code(),
-            ErrorInner::KeyIsLocked(_) | ErrorInner::KeyIsSharedLocked(_) => {
-                error_code::storage::KEY_IS_LOCKED
-            }
+            ErrorInner::KeyIsLocked(_) => error_code::storage::KEY_IS_LOCKED,
             ErrorInner::BadFormat(e) => e.error_code(),
             ErrorInner::Committed { .. } => error_code::storage::COMMITTED,
             ErrorInner::PessimisticLockRolledBack { .. } => {

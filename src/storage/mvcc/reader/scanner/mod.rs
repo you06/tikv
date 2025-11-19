@@ -626,8 +626,12 @@ mod tests {
                 Ok(None) => break,
                 Ok(Some((key, value))) => scan_result.push((key.to_raw().unwrap(), Some(value))),
                 Err(TxnError(box TxnErrorInner::Mvcc(MvccError(
-                    box MvccErrorInner::KeyIsLocked(mut info),
-                )))) => scan_result.push((info.take_key(), None)),
+                    box MvccErrorInner::KeyIsLocked(info),
+                )))) => {
+                    if let Some(mut lock_info) = info.into_vec().into_iter().next() {
+                        scan_result.push((lock_info.take_key(), None))
+                    }
+                }
                 e => panic!("got error while scanning: {:?}", e),
             }
         }

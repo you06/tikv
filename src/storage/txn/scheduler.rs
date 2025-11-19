@@ -1417,7 +1417,7 @@ impl<E: Engine, L: LockManager> TxnScheduler<E, L> {
                         if lock_info.parameters.allow_lock_with_conflict {
                             pr = ProcessResult::PessimisticLockRes {
                                 res: Err(StorageError::from(Error::from(MvccError::from(
-                                    MvccErrorInner::KeyIsLocked(lock_info.lock_info_pb),
+                                    MvccErrorInner::KeyIsLocked(tikv_util::Either::Left(lock_info.lock_info_pb)),
                                 )))),
                             };
                         }

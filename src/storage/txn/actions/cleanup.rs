@@ -35,9 +35,10 @@ pub fn cleanup<S: Snapshot>(
             // If current_ts is not 0, check the Lock's TTL.
             // If the lock is not expired, do not rollback it but report key is locked.
             if !current_ts.is_zero() && lock.ts.physical() + lock.ttl >= current_ts.physical() {
-                return Err(
-                    ErrorInner::KeyIsLocked(lock.clone().into_lock_info(key.into_raw()?)).into(),
-                );
+                return Err(ErrorInner::KeyIsLocked(
+                    lock.clone().into_lock_info(key.into_raw()?)?,
+                )
+                .into());
             }
             rollback_lock(
                 txn,

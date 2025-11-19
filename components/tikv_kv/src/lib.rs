@@ -54,6 +54,7 @@ use raftstore::store::{PessimisticLockPair, TxnExt};
 use thiserror::Error;
 use tikv_util::{
     deadline::Deadline, escape, future::block_on_timeout, memory::HeapSize, time::ThreadReadId,
+    Either,
 };
 use tracker::with_tls_tracker;
 use txn_types::{Key, PessimisticLock, TimeStamp, TxnExtra, Value};
@@ -587,7 +588,7 @@ pub enum ErrorInner {
     #[error("an empty request")]
     EmptyRequest,
     #[error("key is locked (backoff or cleanup) {0:?}")]
-    KeyIsLocked(kvproto::kvrpcpb::LockInfo),
+    KeyIsLocked(Either<kvproto::kvrpcpb::LockInfo, Vec<kvproto::kvrpcpb::LockInfo>>),
     #[error("undetermined write result {0:?}")]
     Undetermined(String),
     #[error("unknown error {0:?}")]

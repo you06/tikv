@@ -1641,8 +1641,11 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                                 .get(CMD)
                                 .locked
                                 .observe(begin_instant.saturating_elapsed().as_secs_f64());
+                            let lock_info = lock.clone().into_lock_info(key.to_raw()?).map_err(
+                                |e| txn::Error::from(mvcc::Error::from(e)),
+                            )?;
                             Err(txn::Error::from_mvcc(mvcc::ErrorInner::KeyIsLocked(
-                                lock.clone().into_lock_info(key.to_raw()?),
+                                lock_info,
                             )))
                         } else {
                             Ok(())
@@ -1683,9 +1686,11 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                     let (read_locks, _) = read_res?;
                     let mut locks = Vec::with_capacity(read_locks.len());
                     for (key, lock) in read_locks.into_iter() {
-                        let lock_info =
-                            lock.into_lock_info(key.into_raw().map_err(txn::Error::from)?);
-                        locks.push(lock_info);
+                        let raw_key = key.into_raw().map_err(txn::Error::from)?;
+                        let lock_info = lock
+                            .into_lock_info(raw_key)
+                            .map_err(|e| txn::Error::from(mvcc::Error::from(e)))?;
+                        locks.extend(lock_info.into_vec());
                     }
 
                     metrics::tls_collect_scan_details(CMD, &statistics);
@@ -4338,7 +4343,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error(box ErrorInner::Txn(txn::Error(box txn::ErrorInner::Mvcc(mvcc::Error(
-                box mvcc::ErrorInner::KeyIsLocked { .. },
+                box mvcc::ErrorInner::KeyIsLocked(_),
             ))))))
         ));
     }
@@ -4368,7 +4373,7 @@ mod tests {
         expect_error(
             |e| match e {
                 Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(mvcc::Error(
-                    box mvcc::ErrorInner::KeyIsLocked { .. },
+                    box mvcc::ErrorInner::KeyIsLocked(_),
                 ))))) => (),
                 e => panic!("unexpected error chain: {:?}", e),
             },
@@ -5437,7 +5442,12 @@ mod tests {
                 expect_fail_callback(tx.clone(), 0, |e| match e {
                     Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(mvcc::Error(
                         box mvcc::ErrorInner::KeyIsLocked(info),
-                    ))))) => assert_eq!(info.get_lock_ttl(), 100),
+                    ))))) => match info {
+                        tikv_util::Either::Left(info) => assert_eq!(info.get_lock_ttl(), 100),
+                        tikv_util::Either::Right(_) => {
+                            panic!("unexpected shared lock in cleanup test")
+                        }
+                    },
                     e => panic!("unexpected error chain: {:?}", e),
                 }),
             )
@@ -5675,7 +5685,7 @@ mod tests {
         expect_error(
             |e| match e {
                 Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(mvcc::Error(
-                    box mvcc::ErrorInner::KeyIsLocked { .. },
+                    box mvcc::ErrorInner::KeyIsLocked(_),
                 ))))) => (),
                 e => panic!("unexpected error chain: {:?}", e),
             },
@@ -5743,7 +5753,7 @@ mod tests {
             expect_error(
                 |e| match e {
                     Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(mvcc::Error(
-                        box mvcc::ErrorInner::KeyIsLocked { .. },
+                        box mvcc::ErrorInner::KeyIsLocked(_),
                     ))))) => (),
                     e => panic!("unexpected error chain: {:?}", e),
                 },

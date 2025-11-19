@@ -124,9 +124,10 @@ fn test_atomic_getting_max_ts_and_storing_memory_lock() {
         // to the get.
         Err(storage::Error(box storage::ErrorInner::Txn(txn::Error(
             box txn::ErrorInner::Mvcc(mvcc::Error(box mvcc::ErrorInner::KeyIsLocked(lock))),
-        )))) => {
-            assert_eq!(lock.get_min_commit_ts(), 41);
-        }
+        )))) => match lock {
+            tikv_util::Either::Left(lock) => assert_eq!(lock.get_min_commit_ts(), 41),
+            tikv_util::Either::Right(_) => panic!("unexpected shared lock"),
+        },
         res => panic!("unexpected result: {:?}", res),
     }
     let res = prewrite_rx.recv().unwrap().unwrap();
@@ -626,10 +627,13 @@ fn test_concurrent_write_after_transfer_leader_invalidates_locks() {
     // to a read lock, and it should return a locked error because it encounters
     // the memory lock.
     let resp = client.kv_prewrite(&req).unwrap();
-    assert_eq!(
-        resp.get_errors()[0].get_locked(),
-        &lock.into_lock().into_lock_info(b"key".to_vec())
-    );
+    let expected = lock
+        .into_lock()
+        .into_lock_info(b"key".to_vec())
+        .unwrap()
+        .left()
+        .unwrap();
+    assert_eq!(resp.get_errors()[0].get_locked(), &expected);
 }
 
 #[test]

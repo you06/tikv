@@ -6,10 +6,12 @@ use kvproto::kvrpcpb::{AssertionLevel, ExtraOp, PrewriteRequestPessimisticAction
 // #[PerformanceCriticalPath]
 use txn_types::{insert_old_value_if_resolved, Mutation, OldValues, TimeStamp, TxnExtra};
 
+use tikv_util::Either;
+
 use crate::storage::{
     kv::WriteData,
     lock_manager::LockManager,
-    mvcc::{MvccTxn, SnapshotReader},
+    mvcc::{MvccTxn, SnapshotReader, Error as MvccError, ErrorInner as MvccErrorInner},
     txn::{
         actions::{common::check_committed_record_on_err, prewrite::prewrite_with_generation},
         commands::{
@@ -178,10 +180,24 @@ impl Flush {
                     unreachable!();
                 }
                 Err(crate::storage::mvcc::Error(
-                    box crate::storage::mvcc::ErrorInner::KeyIsLocked { .. },
+                    box crate::storage::mvcc::ErrorInner::KeyIsLocked(_),
                 )) => match check_committed_record_on_err(prewrite_result, txn, reader, &key) {
                     Ok(res) => return Ok(res.0),
-                    Err(e) => locks.push(Err(e.into())),
+                    Err(e) => match *e.0 {
+                        ErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsLocked(
+                            lock_infos,
+                        ))) => {
+                            for lock_info in lock_infos.into_vec() {
+                                locks.push(Err(
+                                    Error::from_mvcc(MvccErrorInner::KeyIsLocked(
+                                        Either::Left(lock_info),
+                                    ))
+                                    .into(),
+                                ));
+                            }
+                        }
+                        _ => locks.push(Err(e.into())),
+                    },
                 },
                 Err(
                     e @ crate::storage::mvcc::Error(

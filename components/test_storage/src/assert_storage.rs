@@ -13,7 +13,7 @@ use tikv::storage::{
     txn::{Error as TxnError, ErrorInner as TxnErrorInner},
     Engine, Error as StorageError, ErrorInner as StorageErrorInner, TxnStatus,
 };
-use tikv_util::HandyRwLock;
+use tikv_util::{HandyRwLock, Either};
 use txn_types::{self, Key, KvPair, Mutation, TimeStamp, Value};
 
 use super::*;
@@ -579,24 +579,30 @@ impl<E: Engine, F: KvFormat> AssertionStorage<E, F> {
                 start_ts.into(),
             )
             .unwrap();
-        let locks: Vec<(&[u8], &[u8], TimeStamp)> = res
-            .locks
-            .iter()
-            .filter_map(|x| {
-                if let Err(StorageError(box StorageErrorInner::Txn(TxnError(
-                    box TxnErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsLocked(info))),
-                )))) = x
-                {
-                    Some((
-                        info.get_key(),
-                        info.get_primary_lock(),
-                        info.get_lock_version().into(),
-                    ))
-                } else {
-                    None
+        let mut locks: Vec<(&[u8], &[u8], TimeStamp)> = Vec::new();
+        for x in &res.locks {
+            if let Err(StorageError(box StorageErrorInner::Txn(TxnError(
+                box TxnErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsLocked(info))),
+            )))) = x
+            {
+                match info {
+                    Either::Left(lock) => locks.push((
+                        lock.get_key(),
+                        lock.get_primary_lock(),
+                        lock.get_lock_version().into(),
+                    )),
+                    Either::Right(lock_infos) => {
+                        for lock in lock_infos {
+                            locks.push((
+                                lock.get_key(),
+                                lock.get_primary_lock(),
+                                lock.get_lock_version().into(),
+                            ));
+                        }
+                    }
                 }
-            })
-            .collect();
+            }
+        }
         assert_eq!(expect_locks, locks);
     }
 

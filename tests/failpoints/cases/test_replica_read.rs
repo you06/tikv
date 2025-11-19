@@ -718,8 +718,13 @@ fn test_read_index_lock_checking_on_follower() {
 
     fail::remove("before_propose_readindex");
     let resp = block_on_timeout(resp.as_mut(), Duration::from_millis(2000)).unwrap();
+    let expected = lock
+        .into_lock_info(b"k1".to_vec())
+        .unwrap()
+        .left()
+        .unwrap();
     assert_eq!(
-        &lock.into_lock_info(b"k1".to_vec()),
+        &expected,
         resp.get_responses()[0].get_read_index().get_locked(),
         "{:?}",
         resp

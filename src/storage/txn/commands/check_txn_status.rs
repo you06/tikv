@@ -1270,7 +1270,10 @@ pub mod tests {
         check_error(e, b"k1", b"k2", kvrpcpb::Op::PessimisticLock);
         let lock = must_pessimistic_locked(&mut engine, b"k1", 1, 1);
         check_lock(
-            lock.into_lock_info(b"k1".to_vec()),
+            lock.into_lock_info(b"k1".to_vec())
+                .unwrap()
+                .left()
+                .unwrap(),
             b"k1",
             b"k2",
             kvrpcpb::Op::PessimisticLock,
@@ -1281,7 +1284,10 @@ pub mod tests {
         check_error(e, b"k1", b"k2", kvrpcpb::Op::Put);
         let lock = must_locked(&mut engine, b"k1", 1);
         check_lock(
-            lock.into_lock_info(b"k1".to_vec()),
+            lock.into_lock_info(b"k1".to_vec())
+                .unwrap()
+                .left()
+                .unwrap(),
             b"k1",
             b"k2",
             kvrpcpb::Op::Put,

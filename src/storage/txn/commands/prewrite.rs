@@ -14,6 +14,7 @@ use kvproto::kvrpcpb::{
     PrewriteRequestPessimisticAction::{self, *},
 };
 use tikv_kv::SnapshotExt;
+use tikv_util::Either;
 use txn_types::{
     insert_old_value_if_resolved, Key, Mutation, OldValues, TimeStamp, TxnExtra, Write, WriteType,
 };
@@ -664,7 +665,7 @@ impl<K: PrewriteKind> Prewriter<K> {
                     async_commit_pk = None;
                     self.secondary_keys = None;
                     self.try_one_pc = false;
-                    fallback_1pc_locks(txn);
+                    fallback_1pc_locks(txn)?;
                     // release memory locks
                     txn.guards = Vec::new();
                     final_min_commit_ts = TimeStamp::zero();
@@ -692,38 +693,29 @@ impl<K: PrewriteKind> Prewriter<K> {
                     async_commit_pk = None;
                     self.secondary_keys = None;
                     self.try_one_pc = false;
-                    fallback_1pc_locks(txn);
+                    fallback_1pc_locks(txn)?;
                     // release memory locks
                     txn.guards = Vec::new();
                     final_min_commit_ts = TimeStamp::zero();
                 }
-                Err(MvccError(box MvccErrorInner::KeyIsLocked { .. })) => {
+                Err(MvccError(box MvccErrorInner::KeyIsLocked(_))) => {
                     match check_committed_record_on_err(prewrite_result, txn, reader, &key) {
                         Ok(res) => return Ok(res),
-                        Err(e) => locks.push(Err(e.into())),
-                    }
-                }
-                Err(MvccError(box MvccErrorInner::KeyIsSharedLocked{ .. })) => {
-                    match check_committed_record_on_err(prewrite_result, txn, reader, &key) {
-                        Ok(res) => return Ok(res),
-                        Err(e) => {
-                            match *e.0 {
-                                // flatten the shared lock infos into individual KeyIsLocked errors
-                                ErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsSharedLocked(
-                                    lock_infos,
-                                ))) => {
-                                    for lock_info in lock_infos {
-                                        locks.push(Err(
-                                            Error::from_mvcc(MvccErrorInner::KeyIsLocked(
-                                                lock_info,
-                                            ))
-                                            .into(),
-                                        ));
-                                    }
+                        Err(e) => match *e.0 {
+                            ErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsLocked(
+                                lock_infos,
+                            ))) => {
+                                for lock_info in lock_infos.into_vec() {
+                                    locks.push(Err(
+                                        Error::from_mvcc(MvccErrorInner::KeyIsLocked(
+                                            Either::Left(lock_info),
+                                        ))
+                                        .into(),
+                                    ));
                                 }
-                                _ => unreachable!()
                             }
-                        }
+                            _ => locks.push(Err(e.into())),
+                        },
                     }
                 }
                 Err(e @ MvccError(box MvccErrorInner::AssertionFailed { .. })) => {
@@ -1014,12 +1006,13 @@ fn handle_1pc_locks(txn: &mut MvccTxn, commit_ts: TimeStamp) -> ReleasedLocks {
 }
 
 /// Change all 1pc locks in txn to 2pc locks.
-pub(in crate::storage::txn) fn fallback_1pc_locks(txn: &mut MvccTxn) {
+pub(in crate::storage::txn) fn fallback_1pc_locks(txn: &mut MvccTxn) -> Result<()> {
     for (key, mut lock, remove_pessimistic_lock) in std::mem::take(&mut txn.locks_for_1pc) {
         lock.use_one_pc = false;
         let is_new_lock = !remove_pessimistic_lock;
-        txn.put_lock(key, &lock, is_new_lock);
+        txn.put_lock(key, &lock, is_new_lock)?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ use std::io;
 
 use error_code::{self, ErrorCode, ErrorCodeExt};
 use kvproto::kvrpcpb;
+use tikv_util::Either;
 pub use lock::{Lock, LockType, PessimisticLock, TxnLockRef};
 use thiserror::Error;
 pub use timestamp::{TimeStamp, TsSet, TSO_PHYSICAL_SHIFT_BITS};
@@ -35,7 +36,7 @@ pub enum ErrorInner {
     #[error("bad format write data")]
     BadFormatWrite,
     #[error("key is locked (backoff or cleanup) {0:?}")]
-    KeyIsLocked(kvproto::kvrpcpb::LockInfo),
+    KeyIsLocked(Either<kvproto::kvrpcpb::LockInfo, Vec<kvproto::kvrpcpb::LockInfo>>),
     #[error(
         "write conflict, start_ts: {}, conflict_start_ts: {}, conflict_commit_ts: {}, key: {}, primary: {}, reason: {:?}",
         .start_ts, .conflict_start_ts, .conflict_commit_ts,

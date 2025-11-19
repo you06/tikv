@@ -332,6 +332,7 @@ mod tests {
     };
 
     use super::*;
+    use tikv_util::Either;
     use crate::storage::{
         lock_manager::{lock_waiting_queue::LockWaitEntry, MockLockManager},
         mvcc::{Error as MvccError, ErrorInner as MvccErrorInner},
@@ -379,7 +380,9 @@ mod tests {
         };
         let key_is_locked = || {
             StorageErrorInner::Txn(TxnError::from(TxnErrorInner::Mvcc(MvccError::from(
-                MvccErrorInner::KeyIsLocked(kvproto::kvrpcpb::LockInfo::default()),
+                MvccErrorInner::KeyIsLocked(Either::Left(
+                    kvproto::kvrpcpb::LockInfo::default(),
+                )),
             ))))
         };
 

@@ -75,9 +75,9 @@ pub trait Scanner: Send {
                 }
                 Ok(None) => break,
                 Err(
-                    e @ Error(box ErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsLocked {
-                        ..
-                    }))),
+                    e @ Error(box ErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsLocked(
+                        _,
+                    )))),
                 ) => {
                     results.push(Err(e));
                 }
@@ -1091,7 +1091,9 @@ mod tests {
         data.insert(
             Key::from_raw(b"bba"),
             Err(Error::from(ErrorInner::Mvcc(MvccError::from(
-                MvccErrorInner::KeyIsLocked(kvproto::kvrpcpb::LockInfo::default()),
+                MvccErrorInner::KeyIsLocked(tikv_util::Either::Left(
+                    kvproto::kvrpcpb::LockInfo::default(),
+                )),
             )))),
         );
         data.insert(Key::from_raw(b"z"), Ok(b"beta".to_vec()));

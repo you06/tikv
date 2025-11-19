@@ -12,7 +12,10 @@ use std::{
 use error_code::{self, ErrorCode, ErrorCodeExt};
 use kvproto::{errorpb, kvrpcpb, kvrpcpb::ApiVersion};
 use thiserror::Error;
-use tikv_util::deadline::{set_deadline_exceeded_busy_error, DeadlineError};
+use tikv_util::{
+    deadline::{set_deadline_exceeded_busy_error, DeadlineError},
+    Either,
+};
 use txn_types::{KvPair, TimeStamp};
 
 use crate::storage::{
@@ -374,7 +377,7 @@ pub fn extract_key_error(err: &Error) -> kvrpcpb::KeyError {
             box KvErrorInner::KeyIsLocked(info),
         )))))
         | Error(box ErrorInner::Kv(KvError(box KvErrorInner::KeyIsLocked(info)))) => {
-            key_error.set_locked(info.clone());
+            key_error.set_locked(clone_first_lock(info));
         }
         // failed in prewrite or pessimistic lock
         Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(MvccError(
@@ -518,6 +521,18 @@ pub fn map_kv_pairs(r: Vec<Result<KvPair>>) -> Vec<kvrpcpb::KvPair> {
             }
         })
         .collect()
+}
+
+fn clone_first_lock(
+    info: &Either<kvrpcpb::LockInfo, Vec<kvrpcpb::LockInfo>>,
+) -> kvrpcpb::LockInfo {
+    match info {
+        Either::Left(lock) => lock.clone(),
+        Either::Right(locks) => locks
+            .first()
+            .cloned()
+            .expect("shared lock info should not be empty"),
+    }
 }
 
 pub fn extract_key_errors(res: Result<Vec<Result<()>>>) -> Vec<kvrpcpb::KeyError> {

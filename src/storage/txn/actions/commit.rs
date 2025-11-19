@@ -132,7 +132,7 @@ pub fn commit<S: Snapshot>(
             if shared_lock.shared_lock_num() == 0 {
                 Ok(txn.unlock_key(key, true, commit_ts))
             } else {
-                txn.put_lock(key, &shared_lock, false);
+                txn.put_lock(key, &shared_lock, false)?;
                 Ok(None)
             }
         }
@@ -256,7 +256,8 @@ pub mod tests {
             TimeStamp::zero(),
             ConcurrencyManager::new(TimeStamp::zero()),
         );
-        txn.put_lock(Key::from_raw(key), &shared_lock, true);
+        txn.put_lock(Key::from_raw(key), &shared_lock, true)
+            .unwrap();
         let ctx = Context::default();
         write(engine, &ctx, txn.into_modifies());
     }

@@ -14,7 +14,7 @@ use tikv::storage::{
     mvcc::{Error as MvccError, ErrorInner as MvccErrorInner},
     txn::{Error as TxnError, ErrorInner as TxnErrorInner},
 };
-use tikv_util::codec::Error as CodecError;
+use tikv_util::{codec::Error as CodecError, Either};
 use tokio::sync::AcquireError;
 
 use crate::metrics::*;
@@ -77,7 +77,7 @@ impl From<Error> for ErrorPb {
                     .with_label_values(&["key_is_locked"])
                     .inc();
                 let mut e = KeyError::default();
-                e.set_locked(info);
+                e.set_locked(clone_first_lock(&info));
                 err.set_kv_error(e);
             }
             timeout @ Error::Kv(KvError(box EngineErrorInner::Timeout(_))) => {
@@ -149,3 +149,15 @@ impl<T> From<async_channel::SendError<T>> for Error {
 }
 
 pub type Result<T> = result::Result<T, Error>;
+
+fn clone_first_lock(
+    info: &Either<kvproto::kvrpcpb::LockInfo, Vec<kvproto::kvrpcpb::LockInfo>>,
+) -> kvproto::kvrpcpb::LockInfo {
+    match info {
+        Either::Left(lock) => lock.clone(),
+        Either::Right(locks) => locks
+            .first()
+            .cloned()
+            .expect("shared lock info should not be empty"),
+    }
+}

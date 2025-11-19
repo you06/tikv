@@ -6,9 +6,13 @@ use std::fmt;
 use concurrency_manager::{ConcurrencyManager, KeyHandleGuard};
 use engine_traits::{CF_DEFAULT, CF_LOCK, CF_WRITE};
 use kvproto::kvrpcpb::LockInfo;
+use tikv_util::Either;
 use txn_types::{Key, Lock, PessimisticLock, TimeStamp, Value};
 
-use super::metrics::{GC_DELETE_VERSIONS_HISTOGRAM, MVCC_VERSIONS_HISTOGRAM};
+use super::{
+    metrics::{GC_DELETE_VERSIONS_HISTOGRAM, MVCC_VERSIONS_HISTOGRAM},
+    Result,
+};
 use crate::storage::kv::Modify;
 
 pub const MAX_TXN_WRITE_SIZE: usize = 32 * 1024;
@@ -110,6 +114,13 @@ impl MvccTxn {
         std::mem::take(&mut self.new_locks)
     }
 
+    fn push_new_lock_info(&mut self, info: Either<LockInfo, Vec<LockInfo>>) {
+        match info {
+            Either::Left(lock) => self.new_locks.push(lock),
+            Either::Right(mut locks) => self.new_locks.append(&mut locks),
+        }
+    }
+
     pub fn write_size(&self) -> usize {
         self.write_size
     }
@@ -119,14 +130,15 @@ impl MvccTxn {
     }
 
     // Write a lock. If the key doesn't have lock before, `is_new` should be set.
-    pub(crate) fn put_lock(&mut self, key: Key, lock: &Lock, is_new: bool) {
+    pub(crate) fn put_lock(&mut self, key: Key, lock: &Lock, is_new: bool) -> Result<()> {
         if is_new {
-            self.new_locks
-                .push(lock.clone().into_lock_info(key.to_raw().unwrap()));
+            let info = lock.clone().into_lock_info(key.to_raw()?)?;
+            self.push_new_lock_info(info);
         }
         let write = Modify::Put(CF_LOCK, key, lock.to_bytes());
         self.write_size += write.size();
         self.modifies.push(write);
+        Ok(())
     }
 
     pub(crate) fn put_locks_for_1pc(&mut self, key: Key, lock: Lock, remove_pessimstic_lock: bool) {
@@ -135,12 +147,21 @@ impl MvccTxn {
 
     // Write a pessimistic lock. If the key doesn't have lock before, `is_new`
     // should be set.
-    pub(crate) fn put_pessimistic_lock(&mut self, key: Key, lock: PessimisticLock, is_new: bool) {
+    pub(crate) fn put_pessimistic_lock(
+        &mut self,
+        key: Key,
+        lock: PessimisticLock,
+        is_new: bool,
+    ) -> Result<()> {
         if is_new {
-            self.new_locks
-                .push(lock.to_lock().into_lock_info(key.to_raw().unwrap()));
+            let info = lock
+                .clone()
+                .into_lock()
+                .into_lock_info(key.to_raw()?)?;
+            self.push_new_lock_info(info);
         }
-        self.modifies.push(Modify::PessimisticLock(key, lock))
+        self.modifies.push(Modify::PessimisticLock(key, lock));
+        Ok(())
     }
 
     pub(crate) fn put_shared_pessimistic_lock(
@@ -148,13 +169,14 @@ impl MvccTxn {
         key: Key,
         shared_lock: Option<Lock>,
         lock: PessimisticLock,
-    ) {
+    ) -> Result<()> {
         let (mut shared_lock, is_new) = match shared_lock {
             Some(l) => (l, false),
             None => (Lock::new_in_shared_mode(), true),
         };
         shared_lock.put_shared_lock(lock.into_lock());
-        self.put_lock(key, &shared_lock, is_new);
+        self.put_lock(key, &shared_lock, is_new)?;
+        Ok(())
     }
 
     /// Append a modify that unlocks the key. If the lock is removed due to
@@ -212,29 +234,30 @@ impl MvccTxn {
         key: &Key,
         mut lock: Lock,
         is_protected: bool,
-    ) {
+    ) -> Result<()> {
         assert_ne!(lock.ts, self.start_ts);
 
         if !is_protected {
             // A non-protected rollback record is ok to be overwritten, so do nothing in
             // this case.
-            return;
+            return Ok(());
         }
 
         if self.start_ts < lock.min_commit_ts {
             // The rollback will surely not be overwritten by committing the lock. Do
             // nothing.
-            return;
+            return Ok(());
         }
 
         if !lock.use_async_commit {
             // Currently only async commit may use calculated commit_ts. Do nothing if it's
             // not a async commit transaction.
-            return;
+            return Ok(());
         }
 
         lock.rollback_ts.push(self.start_ts);
-        self.put_lock(key.clone(), &lock, false);
+        self.put_lock(key.clone(), &lock, false)?;
+        Ok(())
     }
 
     pub(crate) fn clear(&mut self) {
@@ -268,7 +291,7 @@ pub(crate) fn make_txn_error(
                 info.set_key(key.to_raw().unwrap());
                 info.set_primary_lock(key.to_raw().unwrap());
                 info.set_lock_ttl(3000);
-                ErrorInner::KeyIsLocked(info)
+                ErrorInner::KeyIsLocked(Either::Left(info))
             }
             "committed" => ErrorInner::Committed {
                 start_ts,
@@ -1103,7 +1126,10 @@ pub(crate) mod tests {
         let v = b"v";
 
         let assert_lock_info_eq = |e, expected_lock_info: &LockInfo| match e {
-            Error(box ErrorInner::KeyIsLocked(info)) => assert_eq!(info, *expected_lock_info),
+            Error(box ErrorInner::KeyIsLocked(info)) => match info {
+                Either::Left(info) => assert_eq!(info, *expected_lock_info),
+                Either::Right(_) => panic!("unexpected shared lock"),
+            },
             _ => panic!("unexpected error"),
         };
 
@@ -1246,7 +1272,10 @@ pub(crate) mod tests {
             15,
             SkipPessimisticCheck,
         ) {
-            Error(box ErrorInner::KeyIsLocked(info)) => assert_eq!(info.get_lock_ttl(), 0),
+            Error(box ErrorInner::KeyIsLocked(info)) => match info {
+                Either::Left(info) => assert_eq!(info.get_lock_ttl(), 0),
+                Either::Right(_) => panic!("unexpected shared lock"),
+            },
             e => panic!("unexpected error: {}", e),
         };
     }

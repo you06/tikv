@@ -166,12 +166,19 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for AcquirePessimisticLockR
                     );
                 }
                 Err(MvccError(box MvccErrorInner::KeyIsLocked(lock_info))) => {
-                    let mut lock_info =
-                        WriteResultLockInfo::new(lock_info, params, key, should_not_exist, false);
-                    lock_info.lock_wait_token = lock_wait_token;
-                    lock_info.req_states = Some(req_states);
-                    res.push(PessimisticLockKeyResult::Waiting);
-                    encountered_locks.push(lock_info);
+                    for lock_info in lock_info.into_vec() {
+                        let mut lock_info = WriteResultLockInfo::new(
+                            lock_info,
+                            params.clone(),
+                            key.clone(),
+                            should_not_exist,
+                            false,
+                        );
+                        lock_info.lock_wait_token = lock_wait_token;
+                        lock_info.req_states = Some(req_states.clone());
+                        res.push(PessimisticLockKeyResult::Waiting);
+                        encountered_locks.push(lock_info);
+                    }
                 }
                 Err(e) => {
                     res.push(PessimisticLockKeyResult::Failed(

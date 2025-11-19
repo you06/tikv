@@ -432,12 +432,12 @@ fn test_read_index_lock_checking_on_follower() {
     guard.with_lock(|l| *l = Some(lock.clone()));
 
     let resp = client.coprocessor(&req).unwrap();
-    assert_eq!(
-        &lock.into_lock_info(locked_key.to_vec()),
-        resp.get_locked(),
-        "{:?}",
-        resp
-    );
+    let expected = lock
+        .into_lock_info(locked_key.to_vec())
+        .unwrap()
+        .left()
+        .unwrap();
+    assert_eq!(&expected, resp.get_locked(), "{:?}", resp);
 }
 
 #[test_case(test_raftstore::new_server_cluster)]

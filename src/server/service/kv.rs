@@ -2454,7 +2454,12 @@ txn_command_future!(future_check_txn_status, CheckTxnStatusRequest, CheckTxnStat
                     }
                     resp.set_lock_ttl(lock.ttl);
                     let primary = lock.primary.clone();
-                    resp.set_lock_info(lock.into_lock_info(primary));
+                    let lock_info = lock
+                        .into_lock_info(primary)
+                        .expect("lock info should be available")
+                        .left()
+                        .expect("primary lock should not be shared");
+                    resp.set_lock_info(lock_info);
                 }
                 TxnStatus::PessimisticRollBack => resp.set_action(Action::TtlExpirePessimisticRollback),
                 TxnStatus::LockNotExistDoNothing => resp.set_action(Action::LockNotExistDoNothing),

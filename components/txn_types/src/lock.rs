@@ -622,7 +622,13 @@ impl Lock {
         Ok(lock)
     }
 
-    pub fn into_lock_info(self, raw_key: Vec<u8>) -> LockInfo {
+    pub fn into_lock_info(
+        self,
+        raw_key: Vec<u8>,
+    ) -> Result<Either<LockInfo, Vec<LockInfo>>> {
+        if matches!(self.lock_type, LockType::Shared) {
+            return Ok(Either::Right(self.into_shared_lock_infos(raw_key)?));
+        }
         let mut info = LockInfo::default();
         info.set_primary_lock(self.primary);
         info.set_lock_version(self.ts.into_inner());
@@ -643,7 +649,7 @@ impl Lock {
         info.set_secondaries(self.secondaries.into());
         // The client does not care about last_change_ts, versions_to_last_version and
         // txn_source.
-        info
+        Ok(Either::Left(info))
     }
 
     pub fn into_shared_lock_infos(mut self, raw_key: Vec<u8>) -> Result<Vec<LockInfo>> {
@@ -651,7 +657,7 @@ impl Lock {
             let mut res = Vec::with_capacity(txns_info.len());
             for lock in txns_info.txn_info_segments.values() {
                 let lock = match lock {
-                    Either::Left(encoded) => Lock::parse(&encoded)?,
+                    Either::Left(encoded) => Lock::parse(encoded)?,
                     Either::Right(lock) => lock.clone(),
                 };
                 let lock_type = match lock.lock_type {
@@ -659,7 +665,10 @@ impl Lock {
                     LockType::Pessimistic => Op::SharedPessimisticLock,
                     _ => unreachable!(),
                 };
-                let mut lock_info = lock.into_lock_info(raw_key.clone());
+                let mut lock_info = match lock.into_lock_info(raw_key.clone())? {
+                    Either::Left(info) => info,
+                    Either::Right(_) => unreachable!("nested shared locks are not supported"),
+                };
                 lock_info.set_lock_type(lock_type);
                 res.push(lock_info);
             }
@@ -701,7 +710,7 @@ impl Lock {
         // linearizability. See https://github.com/pingcap/tidb/issues/43583 for details.
         if ts == TimeStamp::max() && is_replica_read {
             return Err(Error::from(ErrorInner::KeyIsLocked(
-                lock.into_owned().into_lock_info(raw_key),
+                lock.into_owned().into_lock_info(raw_key)?,
             )));
         }
 
@@ -718,7 +727,7 @@ impl Lock {
 
         // There is a pending lock. Client should wait or clean it.
         Err(Error::from(ErrorInner::KeyIsLocked(
-            lock.into_owned().into_lock_info(raw_key),
+            lock.into_owned().into_lock_info(raw_key)?,
         )))
     }
 

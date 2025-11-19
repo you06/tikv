@@ -92,7 +92,7 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for TxnHeartBeat {
                 }
 
                 if updated {
-                    txn.put_lock(self.primary_key.clone(), &lock, false);
+                    txn.put_lock(self.primary_key.clone(), &lock, false)?;
                 }
 
                 lock

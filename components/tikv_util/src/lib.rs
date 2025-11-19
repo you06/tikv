@@ -331,6 +331,16 @@ impl<L, R> Either<L, R> {
     }
 }
 
+impl<T> Either<T, Vec<T>> {
+    #[inline]
+    pub fn into_vec(self) -> Vec<T> {
+        match self {
+            Either::Left(item) => vec![item],
+            Either::Right(items) => items,
+        }
+    }
+}
+
 impl<L, R, T> AsRef<T> for Either<L, R>
 where
     T: ?Sized,

@@ -4,6 +4,7 @@
 use kvproto::kvrpcpb::ExtraOp;
 use tikv_kv::Modify;
 use txn_types::{insert_old_value_if_resolved, Key, OldValues, TimeStamp, TxnExtra};
+use tikv_util::Either;
 
 use crate::storage::{
     kv::WriteData,
@@ -136,14 +137,16 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for AcquirePessimisticLock 
                         lock_only_if_exists: self.lock_only_if_exists,
                         allow_lock_with_conflict: self.allow_lock_with_conflict,
                     };
-                    let lock_info = WriteResultLockInfo::new(
-                        lock_info,
-                        request_parameters,
-                        k,
-                        should_not_exist,
-                        is_shared_lock,
-                    );
-                    encountered_locks.push(lock_info);
+                    for lock_info in lock_info.into_vec() {
+                        let lock_info = WriteResultLockInfo::new(
+                            lock_info,
+                            request_parameters.clone(),
+                            k.clone(),
+                            should_not_exist,
+                            is_shared_lock,
+                        );
+                        encountered_locks.push(lock_info);
+                    }
                     // Do not lock previously succeeded keys.
                     txn.clear();
                     res.0.clear();
@@ -168,7 +171,7 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for AcquirePessimisticLock 
             // whole request.
             let lock_info = encountered_locks.drain(..).next().unwrap().lock_info_pb;
             let err = StorageError::from(Error::from(MvccError::from(
-                MvccErrorInner::KeyIsLocked(lock_info),
+                MvccErrorInner::KeyIsLocked(Either::Left(lock_info)),
             )));
             if self.allow_lock_with_conflict {
                 res.as_mut().unwrap().0[0] = PessimisticLockKeyResult::Failed(err.into())

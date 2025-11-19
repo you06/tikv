@@ -2059,10 +2059,16 @@ fn test_shared_exclusive_lock_conflict() {
             storage::Error(box ErrorInner::Txn(TxnError(box TxnErrorInner::Mvcc(mvcc::Error(
                 box mvcc::ErrorInner::KeyIsLocked(lock),
             ))))) => {
-                assert_eq!(lock.get_key(), &shared_key);
-                assert_eq!(lock.get_primary_lock(), &pk);
-                assert_eq!(lock.get_lock_type(), kvrpcpb::Op::SharedPessimisticLock);
-                assert!([80, 90].contains(&lock.get_lock_version()));
+                let locks = match lock {
+                    tikv_util::Either::Left(lock) => vec![lock],
+                    tikv_util::Either::Right(locks) => locks,
+                };
+                for lock in locks {
+                    assert_eq!(lock.get_key(), &shared_key);
+                    assert_eq!(lock.get_primary_lock(), &pk);
+                    assert_eq!(lock.get_lock_type(), kvrpcpb::Op::SharedPessimisticLock);
+                    assert!([80, 90].contains(&lock.get_lock_version()));
+                }
             }
             other => panic!("unexpected lock error: {:?}", other),
         }

@@ -33,7 +33,7 @@ use raftstore_v2::{
     SimpleWriteBinary, SimpleWriteEncoder,
 };
 use tikv_kv::{Modify, WriteEvent};
-use tikv_util::time::Instant;
+use tikv_util::{time::Instant, Either};
 use tracker::{get_tls_tracker_token, GLOBAL_TRACKERS};
 use txn_types::{TxnExtra, TxnExtraScheduler, WriteBatchFlags};
 
@@ -260,7 +260,7 @@ impl<EK: KvEngine, ER: RaftEngine> tikv_kv::Engine for RaftKv2<EK, ER> {
                     {
                         let locked = resp.mut_responses()[0].mut_read_index().take_locked();
                         Err(tikv_kv::Error::from(tikv_kv::ErrorInner::KeyIsLocked(
-                            locked,
+                            Either::Left(locked),
                         )))
                     } else if resp.get_header().has_error() {
                         let err = tikv_kv::Error::from(resp.take_header().take_error());
