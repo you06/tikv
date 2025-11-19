@@ -390,6 +390,16 @@ impl<'a> PrewriteMutation<'a> {
         Ok(info)
     }
 
+    fn shared_lock_info(&self, lock: Lock) -> Result<Vec<LockInfo>> {
+        let mut infos = lock.into_shared_lock_infos(self.key.to_raw()?)?;
+        if self.txn_props.is_pessimistic() {
+            for info in &mut infos {
+                info.set_lock_ttl(0);
+            }
+        }
+        Ok(infos)
+    }
+
     /// Check whether the current key is locked at any timestamp.
     fn check_lock(
         &mut self,
@@ -416,6 +426,9 @@ impl<'a> PrewriteMutation<'a> {
                 .into());
             }
 
+            if lock.is_shared() {
+                return Err(ErrorInner::KeyIsSharedLocked(self.shared_lock_info(lock)?).into());
+            }
             return Err(ErrorInner::KeyIsLocked(self.lock_info(lock)?).into());
         }
 

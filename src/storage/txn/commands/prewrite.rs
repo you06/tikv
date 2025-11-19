@@ -703,6 +703,29 @@ impl<K: PrewriteKind> Prewriter<K> {
                         Err(e) => locks.push(Err(e.into())),
                     }
                 }
+                Err(MvccError(box MvccErrorInner::KeyIsSharedLocked{ .. })) => {
+                    match check_committed_record_on_err(prewrite_result, txn, reader, &key) {
+                        Ok(res) => return Ok(res),
+                        Err(e) => {
+                            match *e.0 {
+                                // flatten the shared lock infos into individual KeyIsLocked errors
+                                ErrorInner::Mvcc(MvccError(box MvccErrorInner::KeyIsSharedLocked(
+                                    lock_infos,
+                                ))) => {
+                                    for lock_info in lock_infos {
+                                        locks.push(Err(
+                                            Error::from_mvcc(MvccErrorInner::KeyIsLocked(
+                                                lock_info,
+                                            ))
+                                            .into(),
+                                        ));
+                                    }
+                                }
+                                _ => unreachable!()
+                            }
+                        }
+                    }
+                }
                 Err(e @ MvccError(box MvccErrorInner::AssertionFailed { .. })) => {
                     if assertion_failure.is_none() {
                         assertion_failure = Some(e);

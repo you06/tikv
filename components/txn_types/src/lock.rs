@@ -646,6 +646,28 @@ impl Lock {
         info
     }
 
+    pub fn into_shared_lock_infos(mut self, raw_key: Vec<u8>) -> Result<Vec<LockInfo>> {
+        if let Some(txns_info) = self.shared_lock_txns_info.as_mut() {
+            let mut res = Vec::with_capacity(txns_info.len());
+            for lock in txns_info.txn_info_segments.values() {
+                let lock = match lock {
+                    Either::Left(encoded) => Lock::parse(&encoded)?,
+                    Either::Right(lock) => lock.clone(),
+                };
+                let lock_type = match lock.lock_type {
+                    LockType::Lock => Op::SharedLock,
+                    LockType::Pessimistic => Op::SharedPessimisticLock,
+                    _ => unreachable!(),
+                };
+                let mut lock_info = lock.into_lock_info(raw_key.clone());
+                lock_info.set_lock_type(lock_type);
+                res.push(lock_info);
+            }
+            return Ok(res);
+        }
+        Ok(vec![])
+    }
+
     /// Checks whether the lock conflicts with the given `ts`. If `ts ==
     /// TimeStamp::max()`, the primary lock will be ignored.
     fn check_ts_conflict_si(
