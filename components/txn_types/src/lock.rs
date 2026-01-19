@@ -323,6 +323,7 @@ impl Lock {
     }
 
     pub fn parse(mut b: &[u8]) -> Result<Lock> {
+        unreachable!();
         if b.is_empty() {
             return Err(Error::from(ErrorInner::BadFormatLock));
         }
