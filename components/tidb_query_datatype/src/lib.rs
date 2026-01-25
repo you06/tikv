@@ -8,6 +8,8 @@
 #![allow(internal_features)]
 #![feature(str_internals)]
 #![feature(core_intrinsics)]
+#![cfg_attr(target_arch = "x86_64", feature(stdarch_x86_avx512))]
+#![cfg_attr(target_arch = "x86_64", feature(avx512_target_feature))]
 
 #[macro_use]
 extern crate num_derive;

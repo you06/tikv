@@ -6,6 +6,8 @@ use codec::prelude::*;
 
 use crate::codec::Result;
 
+mod simd;
+
 const F32_SIZE: usize = std::mem::size_of::<f32>();
 
 // TODO: Implement generic version
@@ -191,8 +193,10 @@ impl<'a> VectorFloat32Ref<'a> {
     }
 
     // An unsafe function to get the 'f32' value without boundary check.
-    // it will check the bounding in debug model and remove the check in
-    // release.
+    // It will check the bounding in debug mode and remove the check in release.
+    // Note: Currently unused as distance calculations use SIMD implementations,
+    // but kept for potential future use or debugging.
+    #[allow(dead_code)]
     unsafe fn index_unchecked(&self, idx: usize) -> f32 {
         #[cfg(debug_assertions)]
         {
@@ -211,13 +215,7 @@ impl<'a> VectorFloat32Ref<'a> {
 
     pub fn l2_squared_distance(&self, b: VectorFloat32Ref<'a>) -> Result<f64> {
         self.check_dims(b)?;
-        let mut distance: f32 = 0.0;
-
-        for i in 0..self.len() {
-            let diff = unsafe { self.index_unchecked(i) - b.index_unchecked(i) };
-            distance += diff * diff;
-        }
-
+        let distance = simd::l2_squared_distance(self.value, b.value);
         Ok(distance as f64)
     }
 
@@ -227,27 +225,13 @@ impl<'a> VectorFloat32Ref<'a> {
 
     pub fn inner_product(&self, b: VectorFloat32Ref<'a>) -> Result<f64> {
         self.check_dims(b)?;
-        let mut distance: f32 = 0.0;
-        for i in 0..self.len() {
-            distance += unsafe { self.index_unchecked(i) * b.index_unchecked(i) };
-        }
-
-        Ok(distance as f64)
+        let result = simd::inner_product(self.value, b.value);
+        Ok(result as f64)
     }
 
     pub fn cosine_distance(&self, b: VectorFloat32Ref<'a>) -> Result<f64> {
         self.check_dims(b)?;
-        let mut distance: f32 = 0.0;
-        let mut norma: f32 = 0.0;
-        let mut normb: f32 = 0.0;
-        for i in 0..self.len() {
-            unsafe {
-                distance += self.index_unchecked(i) * b.index_unchecked(i);
-                norma += self.index_unchecked(i) * self.index_unchecked(i);
-                normb += b.index_unchecked(i) * b.index_unchecked(i);
-            }
-        }
-
+        let (distance, norma, normb) = simd::cosine_distance_components(self.value, b.value);
         let similarity = (distance as f64) / ((norma as f64) * (normb as f64)).sqrt();
         if similarity.is_nan() {
             // Divide by zero
@@ -259,25 +243,14 @@ impl<'a> VectorFloat32Ref<'a> {
 
     pub fn l1_distance(&self, b: VectorFloat32Ref<'a>) -> Result<f64> {
         self.check_dims(b)?;
-        let mut distance: f32 = 0.0;
-        for i in 0..self.len() {
-            let diff = unsafe { self.index_unchecked(i) - b.index_unchecked(i) };
-            distance += diff.abs();
-        }
-
+        let distance = simd::l1_distance(self.value, b.value);
         Ok(distance as f64)
     }
 
     pub fn l2_norm(&self) -> f64 {
         // Note: We align the impl with pgvector: Only l2_norm use double
         // precision during calculation.
-        let mut norm: f64 = 0.0;
-        for i in 0..self.len() {
-            let v = unsafe { self.index_unchecked(i) as f64 };
-            norm += v * v;
-        }
-
-        norm.sqrt()
+        simd::l2_norm_squared(self.value).sqrt()
     }
 }
 
@@ -439,5 +412,112 @@ mod tests {
         let mut encode_buf = Vec::new();
         encode_buf.write_vector_float32(v).unwrap();
         assert_eq!(encode_buf, vec![0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_l2_squared_distance() {
+        let v1 = VectorFloat32::from_f32(vec![1.0, 2.0, 3.0]).unwrap();
+        let v2 = VectorFloat32::from_f32(vec![4.0, 5.0, 6.0]).unwrap();
+        // (4-1)^2 + (5-2)^2 + (6-3)^2 = 9 + 9 + 9 = 27
+        let result = v1.as_ref().l2_squared_distance(v2.as_ref()).unwrap();
+        assert!((result - 27.0).abs() < 1e-6);
+
+        // Test with larger vectors
+        let v3: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let v4: Vec<f32> = (0..100).map(|i| (i + 1) as f32).collect();
+        let v3 = VectorFloat32::from_f32(v3).unwrap();
+        let v4 = VectorFloat32::from_f32(v4).unwrap();
+        // Each element differs by 1, so sum of 1^2 * 100 = 100
+        let result = v3.as_ref().l2_squared_distance(v4.as_ref()).unwrap();
+        assert!((result - 100.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_l2_distance() {
+        let v1 = VectorFloat32::from_f32(vec![3.0, 4.0]).unwrap();
+        let v2 = VectorFloat32::from_f32(vec![0.0, 0.0]).unwrap();
+        // sqrt(3^2 + 4^2) = sqrt(9 + 16) = sqrt(25) = 5
+        let result = v1.as_ref().l2_distance(v2.as_ref()).unwrap();
+        assert!((result - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_inner_product() {
+        let v1 = VectorFloat32::from_f32(vec![1.0, 2.0, 3.0]).unwrap();
+        let v2 = VectorFloat32::from_f32(vec![4.0, 5.0, 6.0]).unwrap();
+        // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+        let result = v1.as_ref().inner_product(v2.as_ref()).unwrap();
+        assert!((result - 32.0).abs() < 1e-6);
+
+        // Test with larger vectors
+        let v3: Vec<f32> = (1..=100).map(|i| i as f32).collect();
+        let v3 = VectorFloat32::from_f32(v3).unwrap();
+        // Sum of squares from 1 to 100 = n(n+1)(2n+1)/6 = 100*101*201/6 = 338350
+        let result = v3.as_ref().inner_product(v3.as_ref()).unwrap();
+        assert!((result - 338350.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_cosine_distance() {
+        // Same vectors: cosine distance = 0
+        let v1 = VectorFloat32::from_f32(vec![1.0, 2.0, 3.0]).unwrap();
+        let result = v1.as_ref().cosine_distance(v1.as_ref()).unwrap();
+        assert!(result.abs() < 1e-6);
+
+        // Opposite vectors: cosine distance = 2
+        let v2 = VectorFloat32::from_f32(vec![-1.0, -2.0, -3.0]).unwrap();
+        let result = v1.as_ref().cosine_distance(v2.as_ref()).unwrap();
+        assert!((result - 2.0).abs() < 1e-6);
+
+        // Orthogonal vectors: cosine distance = 1
+        let v3 = VectorFloat32::from_f32(vec![1.0, 0.0]).unwrap();
+        let v4 = VectorFloat32::from_f32(vec![0.0, 1.0]).unwrap();
+        let result = v3.as_ref().cosine_distance(v4.as_ref()).unwrap();
+        assert!((result - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_l1_distance() {
+        let v1 = VectorFloat32::from_f32(vec![1.0, 2.0, 3.0]).unwrap();
+        let v2 = VectorFloat32::from_f32(vec![4.0, 5.0, 6.0]).unwrap();
+        // |4-1| + |5-2| + |6-3| = 3 + 3 + 3 = 9
+        let result = v1.as_ref().l1_distance(v2.as_ref()).unwrap();
+        assert!((result - 9.0).abs() < 1e-6);
+
+        // Test with negative values
+        let v3 = VectorFloat32::from_f32(vec![-1.0, -2.0]).unwrap();
+        let v4 = VectorFloat32::from_f32(vec![1.0, 2.0]).unwrap();
+        // |-1-1| + |-2-2| = 2 + 4 = 6
+        let result = v3.as_ref().l1_distance(v4.as_ref()).unwrap();
+        assert!((result - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_l2_norm() {
+        let v1 = VectorFloat32::from_f32(vec![3.0, 4.0]).unwrap();
+        // sqrt(3^2 + 4^2) = sqrt(9 + 16) = sqrt(25) = 5
+        let result = v1.as_ref().l2_norm();
+        assert!((result - 5.0).abs() < 1e-10);
+
+        // Test with larger vector
+        let v2: Vec<f32> = (1..=10).map(|i| i as f32).collect();
+        let v2 = VectorFloat32::from_f32(v2).unwrap();
+        // sqrt(sum of 1^2 + 2^2 + ... + 10^2) = sqrt(385) ≈ 19.621
+        let expected = (385.0_f64).sqrt();
+        let result = v2.as_ref().l2_norm();
+        assert!((result - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_dimension_mismatch() {
+        let v1 = VectorFloat32::from_f32(vec![1.0, 2.0]).unwrap();
+        let v2 = VectorFloat32::from_f32(vec![1.0, 2.0, 3.0]).unwrap();
+
+        // All distance functions should return error for dimension mismatch
+        assert!(v1.as_ref().l2_squared_distance(v2.as_ref()).is_err());
+        assert!(v1.as_ref().l2_distance(v2.as_ref()).is_err());
+        assert!(v1.as_ref().inner_product(v2.as_ref()).is_err());
+        assert!(v1.as_ref().cosine_distance(v2.as_ref()).is_err());
+        assert!(v1.as_ref().l1_distance(v2.as_ref()).is_err());
     }
 }
