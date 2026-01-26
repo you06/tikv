@@ -102,9 +102,29 @@ impl AggrFnStateCount {
         CC: ChunkRef<'a, TT>,
     {
         // Will be used for expressions like `COUNT(col)`.
-        for physical_index in logical_rows {
-            if physical_values.get_option_ref(*physical_index).is_some() {
-                self.count += 1;
+        if logical_rows.is_empty() {
+            return Ok(());
+        }
+
+        let len = logical_rows.len();
+        let start = logical_rows[0];
+        let end = start + len;
+
+        // Check if logical_rows represents a contiguous range [start, end).
+        // This is a O(1) check that is sufficient when logical_rows has no duplicates
+        // (which is the typical case in aggregation).
+        let is_contiguous =
+            len == 1 || (logical_rows[len - 1] == end - 1 && end <= physical_values.get_bit_vec().len());
+
+        if is_contiguous {
+            // Fast path: use hardware POPCNT to count non-NULL values in the bitmap.
+            self.count += physical_values.get_bit_vec().count_ones_range(start, end);
+        } else {
+            // Slow path: iterate through each element.
+            for physical_index in logical_rows {
+                if physical_values.get_option_ref(*physical_index).is_some() {
+                    self.count += 1;
+                }
             }
         }
         Ok(())
@@ -215,5 +235,164 @@ mod tests {
         result[0].clear();
         state.push_result(&mut ctx, &mut result).unwrap();
         assert_eq!(result[0].to_int_vec(), &[Some(1)]);
+    }
+
+    #[test]
+    fn test_update_vector_contiguous() {
+        // Test the optimized fast path with contiguous logical_rows
+        let mut ctx = EvalContext::default();
+        let function = AggrFnCount;
+        let mut state = function.create_state();
+
+        let mut result = [VectorValue::with_capacity(0, EvalType::Int)];
+
+        // Create a chunked vec with mix of Some and None values
+        let chunked_vec: ChunkedVecSized<Int> = vec![
+            Some(1i64),
+            None,
+            Some(2i64),
+            Some(3i64),
+            None,
+            Some(4i64),
+            None,
+            None,
+            Some(5i64),
+            Some(6i64),
+        ]
+        .into();
+
+        // Contiguous rows [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] - fast path
+        update_vector!(state, &mut ctx, &chunked_vec, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        assert_eq!(result[0].to_int_vec(), &[Some(6)]); // 6 non-null values
+    }
+
+    #[test]
+    fn test_update_vector_non_contiguous() {
+        // Test the slow path with non-contiguous logical_rows
+        let mut ctx = EvalContext::default();
+        let function = AggrFnCount;
+        let mut state = function.create_state();
+
+        let mut result = [VectorValue::with_capacity(0, EvalType::Int)];
+
+        // Create a chunked vec with mix of Some and None values
+        let chunked_vec: ChunkedVecSized<Int> = vec![
+            Some(1i64), // 0
+            None,       // 1
+            Some(2i64), // 2
+            Some(3i64), // 3
+            None,       // 4
+            Some(4i64), // 5
+            None,       // 6
+            None,       // 7
+            Some(5i64), // 8
+            Some(6i64), // 9
+        ]
+        .into();
+
+        // Non-contiguous rows [0, 2, 4, 6, 8] - slow path
+        update_vector!(state, &mut ctx, &chunked_vec, &[0, 2, 4, 6, 8]).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        // Rows 0, 2, 8 have values (Some), rows 4, 6 are None
+        assert_eq!(result[0].to_int_vec(), &[Some(3)]);
+    }
+
+    #[test]
+    fn test_update_vector_partial_contiguous() {
+        // Test contiguous rows starting from non-zero index
+        let mut ctx = EvalContext::default();
+        let function = AggrFnCount;
+        let mut state = function.create_state();
+
+        let mut result = [VectorValue::with_capacity(0, EvalType::Int)];
+
+        let chunked_vec: ChunkedVecSized<Int> = vec![
+            None,       // 0
+            Some(1i64), // 1
+            Some(2i64), // 2
+            None,       // 3
+            Some(3i64), // 4
+            Some(4i64), // 5
+        ]
+        .into();
+
+        // Contiguous rows [2, 3, 4] starting from index 2
+        update_vector!(state, &mut ctx, &chunked_vec, &[2, 3, 4]).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        // Rows 2 and 4 have values, row 3 is None
+        assert_eq!(result[0].to_int_vec(), &[Some(2)]);
+    }
+
+    #[test]
+    fn test_update_vector_large_contiguous() {
+        // Test with larger data to exercise multi-word POPCNT
+        let mut ctx = EvalContext::default();
+        let function = AggrFnCount;
+        let mut state = function.create_state();
+
+        let mut result = [VectorValue::with_capacity(0, EvalType::Int)];
+
+        // Create a chunked vec with 200 elements, alternating Some/None
+        let data: Vec<Option<Int>> = (0..200).map(|i| if i % 3 == 0 { None } else { Some(i) }).collect();
+        let chunked_vec: ChunkedVecSized<Int> = data.into();
+
+        // Contiguous rows [0..200]
+        let logical_rows: Vec<usize> = (0..200).collect();
+        update_vector!(state, &mut ctx, &chunked_vec, &logical_rows).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        // 200 elements, every 3rd is None: 200 - 67 = 133 non-null
+        // (indices 0, 3, 6, ..., 198 are None: (198/3)+1 = 67)
+        assert_eq!(result[0].to_int_vec(), &[Some(133)]);
+    }
+
+    #[test]
+    fn test_update_vector_empty() {
+        // Test with empty logical_rows
+        let mut ctx = EvalContext::default();
+        let function = AggrFnCount;
+        let mut state = function.create_state();
+
+        let mut result = [VectorValue::with_capacity(0, EvalType::Int)];
+
+        let chunked_vec: ChunkedVecSized<Int> = vec![Some(1i64), Some(2i64)].into();
+
+        // Empty logical_rows
+        update_vector!(state, &mut ctx, &chunked_vec, &[]).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        assert_eq!(result[0].to_int_vec(), &[Some(0)]);
+    }
+
+    #[test]
+    fn test_update_vector_single_element() {
+        // Test with single element
+        let mut ctx = EvalContext::default();
+        let function = AggrFnCount;
+        let mut state = function.create_state();
+
+        let mut result = [VectorValue::with_capacity(0, EvalType::Int)];
+
+        let chunked_vec: ChunkedVecSized<Int> = vec![None, Some(1i64), None].into();
+
+        // Single element at index 1 (which is Some)
+        update_vector!(state, &mut ctx, &chunked_vec, &[1]).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        assert_eq!(result[0].to_int_vec(), &[Some(1)]);
+
+        // Reset and test single None element
+        let function2 = AggrFnCount;
+        let mut state2 = function2.create_state();
+        let mut result2 = [VectorValue::with_capacity(0, EvalType::Int)];
+
+        update_vector!(state2, &mut ctx, &chunked_vec, &[0]).unwrap();
+
+        state2.push_result(&mut ctx, &mut result2).unwrap();
+        assert_eq!(result2[0].to_int_vec(), &[Some(0)]);
     }
 }

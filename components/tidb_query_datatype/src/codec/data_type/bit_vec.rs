@@ -81,6 +81,60 @@ impl BitVec {
         let pos = idx >> 6;
         (self.data[pos] & mask) != 0
     }
+
+    /// Counts the number of 1 bits in the range [start, end).
+    ///
+    /// This method is optimized using the hardware POPCNT instruction via
+    /// Rust's `count_ones()`, which provides significant speedup for batch
+    /// NULL counting in aggregation functions like COUNT.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `start > end` or `end > self.length`.
+    #[inline]
+    pub fn count_ones_range(&self, start: usize, end: usize) -> usize {
+        assert!(start <= end);
+        assert!(end <= self.length);
+
+        if start == end {
+            return 0;
+        }
+
+        let start_word = start >> 6;
+        let start_bit = start & 63;
+        let end_word = end >> 6;
+        let end_bit = end & 63;
+
+        if start_word == end_word {
+            // All bits are in the same u64 word.
+            // Create a mask for bits [start_bit, end_bit).
+            let mask = ((1u64 << end_bit) - 1) & !((1u64 << start_bit) - 1);
+            return (self.data[start_word] & mask).count_ones() as usize;
+        }
+
+        let mut count = 0usize;
+
+        // First partial word: bits [start_bit, 64)
+        if start_bit == 0 {
+            count += self.data[start_word].count_ones() as usize;
+        } else {
+            let mask = !((1u64 << start_bit) - 1);
+            count += (self.data[start_word] & mask).count_ones() as usize;
+        }
+
+        // Full words in the middle: [start_word + 1, end_word)
+        for word in &self.data[start_word + 1..end_word] {
+            count += word.count_ones() as usize;
+        }
+
+        // Last partial word: bits [0, end_bit)
+        if end_bit != 0 {
+            let mask = (1u64 << end_bit) - 1;
+            count += (self.data[end_word] & mask).count_ones() as usize;
+        }
+
+        count
+    }
 }
 
 pub struct BitAndIterator<'a> {
@@ -311,5 +365,131 @@ mod tests {
             cnt += 1;
         }
         assert_eq!(cnt, size);
+    }
+
+    #[test]
+    fn test_count_ones_range_empty() {
+        let x = BitVec::with_capacity(0);
+        // Empty range on empty vec should return 0 (start == end == 0)
+        assert_eq!(x.count_ones_range(0, 0), 0);
+    }
+
+    #[test]
+    fn test_count_ones_range_single_word() {
+        let mut x = BitVec::with_capacity(64);
+        // Create pattern: true, false, true, false, ...
+        for i in 0..32 {
+            x.push(i % 2 == 0);
+        }
+        // Bits 0, 2, 4, 6, ... 30 are true (16 ones)
+        assert_eq!(x.count_ones_range(0, 32), 16);
+        // Empty range
+        assert_eq!(x.count_ones_range(5, 5), 0);
+        // Single element ranges
+        assert_eq!(x.count_ones_range(0, 1), 1); // bit 0 is true
+        assert_eq!(x.count_ones_range(1, 2), 0); // bit 1 is false
+        assert_eq!(x.count_ones_range(2, 3), 1); // bit 2 is true
+        // Partial ranges within single word
+        assert_eq!(x.count_ones_range(0, 8), 4); // bits 0,2,4,6 are true
+        assert_eq!(x.count_ones_range(1, 9), 4); // bits 2,4,6,8 are true
+        assert_eq!(x.count_ones_range(10, 20), 5); // bits 10,12,14,16,18 are true
+    }
+
+    #[test]
+    fn test_count_ones_range_multiple_words() {
+        let mut x = BitVec::with_capacity(200);
+        // Create 200 bits with pattern: true, false, true, false, ...
+        for i in 0..200 {
+            x.push(i % 2 == 0);
+        }
+        // Full range
+        assert_eq!(x.count_ones_range(0, 200), 100);
+        // First word only (bits 0-63)
+        assert_eq!(x.count_ones_range(0, 64), 32);
+        // Second word only (bits 64-127)
+        assert_eq!(x.count_ones_range(64, 128), 32);
+        // Across word boundary
+        assert_eq!(x.count_ones_range(60, 70), 5); // bits 60,62,64,66,68 are true
+        // Multiple complete words
+        assert_eq!(x.count_ones_range(0, 128), 64);
+        // Partial start, full middle, partial end
+        assert_eq!(x.count_ones_range(10, 150), 70); // (64-10)/2 + 32 + (150-128)/2 = 27 + 32 + 11 = 70
+    }
+
+    #[test]
+    fn test_count_ones_range_all_ones() {
+        let mut x = BitVec::with_capacity(256);
+        for _ in 0..256 {
+            x.push(true);
+        }
+        assert_eq!(x.count_ones_range(0, 256), 256);
+        assert_eq!(x.count_ones_range(0, 64), 64);
+        assert_eq!(x.count_ones_range(64, 128), 64);
+        assert_eq!(x.count_ones_range(10, 250), 240);
+    }
+
+    #[test]
+    fn test_count_ones_range_all_zeros() {
+        let mut x = BitVec::with_capacity(256);
+        for _ in 0..256 {
+            x.push(false);
+        }
+        assert_eq!(x.count_ones_range(0, 256), 0);
+        assert_eq!(x.count_ones_range(0, 64), 0);
+        assert_eq!(x.count_ones_range(64, 128), 0);
+        assert_eq!(x.count_ones_range(10, 250), 0);
+    }
+
+    #[test]
+    fn test_count_ones_range_word_boundary() {
+        let mut x = BitVec::with_capacity(128);
+        for i in 0..128 {
+            // Set bits 63 and 64 to true, rest false
+            x.push(i == 63 || i == 64);
+        }
+        assert_eq!(x.count_ones_range(0, 128), 2);
+        assert_eq!(x.count_ones_range(0, 64), 1);  // bit 63
+        assert_eq!(x.count_ones_range(64, 128), 1); // bit 64
+        assert_eq!(x.count_ones_range(63, 65), 2);  // bits 63 and 64
+        assert_eq!(x.count_ones_range(62, 66), 2);
+        assert_eq!(x.count_ones_range(0, 63), 0);
+        assert_eq!(x.count_ones_range(65, 128), 0);
+    }
+
+    #[test]
+    fn test_count_ones_range_verify_against_naive() {
+        // Verify count_ones_range matches naive counting for various patterns
+        let mut x = BitVec::with_capacity(500);
+        for i in 0..500 {
+            x.push(i % 3 == 0 || i % 7 == 0);
+        }
+
+        // Test various ranges
+        let ranges = [
+            (0, 0),
+            (0, 1),
+            (0, 64),
+            (0, 65),
+            (0, 128),
+            (0, 500),
+            (1, 64),
+            (63, 65),
+            (63, 129),
+            (100, 400),
+            (127, 384),
+            (64, 64),
+            (64, 65),
+        ];
+
+        for (start, end) in ranges {
+            let expected: usize = (start..end).filter(|&i| x.get(i)).count();
+            assert_eq!(
+                x.count_ones_range(start, end),
+                expected,
+                "Mismatch for range [{}, {})",
+                start,
+                end
+            );
+        }
     }
 }
