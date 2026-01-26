@@ -157,6 +157,103 @@ where
     }
 }
 
+// Specialized SIMD-optimized implementation for AVG(Real).
+//
+// This provides a custom update_vector_unsafe that uses SIMD instructions
+// to accelerate summing f64 values when:
+// 1. The logical_rows are contiguous (common case in aggregation)
+// 2. AVX2 instructions are available on x86_64
+//
+// Key optimization: NULL values in ChunkedVecSized are stored as zeroed memory
+// (0.0 for f64), so we can safely sum all values without special NULL handling.
+// The bitmap is used to count non-NULL values (using POPCNT) for the count.
+impl super::AggrFunctionStateUpdatePartial<&'static Real> for AggrFnStateAvg<Real> {
+    #[inline]
+    unsafe fn update_unsafe(
+        &mut self,
+        ctx: &mut EvalContext,
+        value: Option<&'static Real>,
+    ) -> Result<()> {
+        self.update_concrete(ctx, value)
+    }
+
+    #[inline]
+    unsafe fn update_repeat_unsafe(
+        &mut self,
+        ctx: &mut EvalContext,
+        value: Option<&'static Real>,
+        repeat_times: usize,
+    ) -> Result<()> {
+        match value {
+            None => Ok(()),
+            Some(value) => {
+                // SAFETY: Multiplying a finite f64 by a positive integer can only produce
+                // a finite value or infinity, never NaN. Real guarantees finite values.
+                let repeated_sum = Real::new(value.into_inner() * repeat_times as f64).unwrap();
+                self.sum.add_assign(ctx, &repeated_sum)?;
+                self.count += repeat_times;
+                Ok(())
+            }
+        }
+    }
+
+    #[inline]
+    unsafe fn update_vector_unsafe(
+        &mut self,
+        _ctx: &mut EvalContext,
+        _phantom_data: Option<&'static Real>,
+        physical_values: &'static ChunkedVecSized<Real>,
+        logical_rows: &[usize],
+    ) -> Result<()> {
+        if logical_rows.is_empty() {
+            return Ok(());
+        }
+
+        let len = logical_rows.len();
+        let start = logical_rows[0];
+        let end = start + len;
+
+        // Check if logical_rows is contiguous
+        let is_contiguous = len == 1
+            || (logical_rows[len - 1] == end - 1
+                && end <= physical_values.get_bit_vec().len());
+
+        if is_contiguous {
+            // Fast path: use SIMD to sum all values and POPCNT to count non-NULLs.
+            // NULL values are stored as 0.0, so they contribute nothing to the sum.
+            let bit_vec = physical_values.get_bit_vec();
+            let non_null_count = bit_vec.count_ones_range(start, end);
+
+            if non_null_count > 0 {
+                self.count += non_null_count;
+
+                // Get raw data and sum using SIMD.
+                // SAFETY: Real (NotNan<f64>) has the same memory layout as f64.
+                let raw_data = physical_values.raw_data();
+                let data_slice = &raw_data[start..end];
+                let f64_slice: &[f64] =
+                    std::slice::from_raw_parts(data_slice.as_ptr() as *const f64, data_slice.len());
+
+                let sum = crate::simd::sum_f64_slice(f64_slice);
+                // SAFETY: Adding finite f64 values can only produce finite or infinite
+                // results, never NaN. Real guarantees finite values, and NULL values
+                // are stored as 0.0 which is also finite.
+                self.sum = Real::new(self.sum.into_inner() + sum).unwrap();
+            }
+        } else {
+            // Slow path: iterate through non-contiguous elements
+            for physical_index in logical_rows {
+                if let Some(value) = physical_values.get_option_ref(*physical_index) {
+                    self.sum += *value;
+                    self.count += 1;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, AggrFunction)]
 #[aggr_function(state = AggrFnStateAvgForEnum::new())]
 pub struct AggrFnAvgForEnum
@@ -503,5 +600,187 @@ mod tests {
         AggrFnDefinitionParserAvg
             .parse(expr, &mut ctx, &src_schema, &mut schema, &mut exp)
             .unwrap_err();
+    }
+
+    #[test]
+    fn test_avg_real_vector_contiguous() {
+        // Test SIMD fast path with contiguous logical_rows
+        let mut ctx = EvalContext::default();
+        let function = AggrFnAvg::<Real>::new();
+        let mut state = function.create_state();
+
+        let mut result = [
+            VectorValue::with_capacity(0, EvalType::Int),
+            VectorValue::with_capacity(0, EvalType::Real),
+        ];
+
+        // Create a chunked vec with mix of Some and None values
+        let chunked_vec: ChunkedVecSized<Real> = vec![
+            Real::new(1.0).ok(),
+            None,
+            Real::new(2.0).ok(),
+            Real::new(3.0).ok(),
+            None,
+            Real::new(4.0).ok(),
+            None,
+            None,
+            Real::new(5.0).ok(),
+            Real::new(6.0).ok(),
+        ]
+        .into();
+
+        // Contiguous rows [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] - fast path
+        update_vector!(state, &mut ctx, &chunked_vec, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        // Count: 6 non-null values, Sum: 1 + 2 + 3 + 4 + 5 + 6 = 21
+        assert_eq!(result[0].to_int_vec(), &[Some(6)]);
+        assert_eq!(result[1].to_real_vec(), &[Real::new(21.0).ok()]);
+    }
+
+    #[test]
+    fn test_avg_real_vector_non_contiguous() {
+        // Test slow path with non-contiguous logical_rows
+        let mut ctx = EvalContext::default();
+        let function = AggrFnAvg::<Real>::new();
+        let mut state = function.create_state();
+
+        let mut result = [
+            VectorValue::with_capacity(0, EvalType::Int),
+            VectorValue::with_capacity(0, EvalType::Real),
+        ];
+
+        let chunked_vec: ChunkedVecSized<Real> = vec![
+            Real::new(1.0).ok(), // 0
+            None,                // 1
+            Real::new(2.0).ok(), // 2
+            Real::new(3.0).ok(), // 3
+            None,                // 4
+            Real::new(4.0).ok(), // 5
+        ]
+        .into();
+
+        // Non-contiguous rows [0, 2, 4] - slow path
+        update_vector!(state, &mut ctx, &chunked_vec, &[0, 2, 4]).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        // Count: 2, Sum: 1.0 + 2.0 = 3.0 (row 4 is None)
+        assert_eq!(result[0].to_int_vec(), &[Some(2)]);
+        assert_eq!(result[1].to_real_vec(), &[Real::new(3.0).ok()]);
+    }
+
+    #[test]
+    fn test_avg_real_vector_large_contiguous() {
+        // Test with larger data to exercise multi-element SIMD processing
+        let mut ctx = EvalContext::default();
+        let function = AggrFnAvg::<Real>::new();
+        let mut state = function.create_state();
+
+        let mut result = [
+            VectorValue::with_capacity(0, EvalType::Int),
+            VectorValue::with_capacity(0, EvalType::Real),
+        ];
+
+        // Create a chunked vec with 200 elements
+        let data: Vec<Option<Real>> = (0..200)
+            .map(|i| {
+                if i % 3 == 0 {
+                    None
+                } else {
+                    Real::new(i as f64).ok()
+                }
+            })
+            .collect();
+        let chunked_vec: ChunkedVecSized<Real> = data.into();
+
+        // Contiguous rows [0..200]
+        let logical_rows: Vec<usize> = (0..200).collect();
+        update_vector!(state, &mut ctx, &chunked_vec, &logical_rows).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+
+        // Calculate expected count and sum
+        let expected_count: i64 = (0..200).filter(|&i| i % 3 != 0).count() as i64;
+        let expected_sum: f64 = (0..200).filter(|&i| i % 3 != 0).map(|i| i as f64).sum();
+        assert_eq!(result[0].to_int_vec(), &[Some(expected_count)]);
+        assert_eq!(result[1].to_real_vec(), &[Real::new(expected_sum).ok()]);
+    }
+
+    #[test]
+    fn test_avg_real_vector_all_null() {
+        // Test when all values are NULL
+        let mut ctx = EvalContext::default();
+        let function = AggrFnAvg::<Real>::new();
+        let mut state = function.create_state();
+
+        let mut result = [
+            VectorValue::with_capacity(0, EvalType::Int),
+            VectorValue::with_capacity(0, EvalType::Real),
+        ];
+
+        let chunked_vec: ChunkedVecSized<Real> = vec![None, None, None, None].into();
+
+        update_vector!(state, &mut ctx, &chunked_vec, &[0, 1, 2, 3]).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        // All NULL means count = 0 and sum = NULL
+        assert_eq!(result[0].to_int_vec(), &[Some(0)]);
+        assert_eq!(result[1].to_real_vec(), &[None]);
+    }
+
+    #[test]
+    fn test_avg_real_vector_empty() {
+        // Test with empty logical_rows
+        let mut ctx = EvalContext::default();
+        let function = AggrFnAvg::<Real>::new();
+        let mut state = function.create_state();
+
+        let mut result = [
+            VectorValue::with_capacity(0, EvalType::Int),
+            VectorValue::with_capacity(0, EvalType::Real),
+        ];
+
+        let chunked_vec: ChunkedVecSized<Real> =
+            vec![Real::new(1.0).ok(), Real::new(2.0).ok()].into();
+
+        update_vector!(state, &mut ctx, &chunked_vec, &[]).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        assert_eq!(result[0].to_int_vec(), &[Some(0)]);
+        assert_eq!(result[1].to_real_vec(), &[None]);
+    }
+
+    #[test]
+    fn test_avg_real_update_repeat() {
+        // Test the optimized update_repeat_unsafe
+        let mut ctx = EvalContext::default();
+        let function = AggrFnAvg::<Real>::new();
+        let mut state = function.create_state();
+
+        let mut result = [
+            VectorValue::with_capacity(0, EvalType::Int),
+            VectorValue::with_capacity(0, EvalType::Real),
+        ];
+
+        update_repeat!(state, &mut ctx, Real::new(5.0).ok().as_ref(), 4).unwrap();
+
+        state.push_result(&mut ctx, &mut result).unwrap();
+        // Count: 4, Sum: 5.0 * 4 = 20.0
+        assert_eq!(result[0].to_int_vec(), &[Some(4)]);
+        assert_eq!(result[1].to_real_vec(), &[Real::new(20.0).ok()]);
+
+        // Test update_repeat with None
+        let function2 = AggrFnAvg::<Real>::new();
+        let mut state2 = function2.create_state();
+        let mut result2 = [
+            VectorValue::with_capacity(0, EvalType::Int),
+            VectorValue::with_capacity(0, EvalType::Real),
+        ];
+
+        update_repeat!(state2, &mut ctx, Option::<&Real>::None, 10).unwrap();
+
+        state2.push_result(&mut ctx, &mut result2).unwrap();
+        assert_eq!(result2[0].to_int_vec(), &[Some(0)]);
+        assert_eq!(result2[1].to_real_vec(), &[None]);
     }
 }

@@ -22,6 +22,7 @@ mod impl_max_min;
 mod impl_sum;
 mod impl_variance;
 mod parser;
+mod simd;
 mod summable;
 mod util;
 
@@ -334,12 +335,16 @@ where
     State: ConcreteAggrFunctionState<ParameterType = T>,
 {
     #[inline]
-    unsafe fn update_unsafe(&mut self, ctx: &mut EvalContext, value: Option<T>) -> Result<()> {
+    default unsafe fn update_unsafe(
+        &mut self,
+        ctx: &mut EvalContext,
+        value: Option<T>,
+    ) -> Result<()> {
         self.update_concrete_unsafe(ctx, value)
     }
 
     #[inline]
-    unsafe fn update_repeat_unsafe(
+    default unsafe fn update_repeat_unsafe(
         &mut self,
         ctx: &mut EvalContext,
         value: Option<T>,
@@ -352,7 +357,7 @@ where
     }
 
     #[inline]
-    unsafe fn update_vector_unsafe(
+    default unsafe fn update_vector_unsafe(
         &mut self,
         ctx: &mut EvalContext,
         _phantom_data: Option<T>,

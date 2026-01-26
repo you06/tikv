@@ -31,6 +31,15 @@ impl<T: Sized + Clone> ChunkedVecSized<T> {
             None
         }
     }
+
+    /// Returns a reference to the underlying raw data slice.
+    ///
+    /// Note: NULL values are stored as zeroed memory in the data array.
+    /// The bitmap should be consulted to determine which values are valid.
+    #[inline]
+    pub fn raw_data(&self) -> &[T] {
+        &self.data
+    }
 }
 
 impl<T: Clone> ChunkedVec<T> for ChunkedVecSized<T> {
