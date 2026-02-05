@@ -1436,6 +1436,30 @@ fn handle_batch_commands_request<E: Engine, L: LockManager, F: KvFormat>(
                         response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::raw_get, source, resource_group_priority);
                     }
                 },
+                Some(batch_commands_request::request::Cmd::BatchGet(req)) => {
+                    handle_cluster_id_mismatch!(cluster_id, req);
+                    let resource_control_ctx = req.get_context().get_resource_control_context();
+                    let mut resource_group_priority = ResourcePriority::unknown;
+                    if let Some(resource_manager) = resource_manager {
+                        resource_manager.consume_penalty(resource_control_ctx);
+                        resource_group_priority = ResourcePriority::from(resource_control_ctx.override_priority);
+                    }
+                    GRPC_RESOURCE_GROUP_COUNTER_VEC
+                    .with_label_values(&[resource_control_ctx.get_resource_group_name(), resource_control_ctx.get_resource_group_name()])
+                    .inc();
+                    if batcher.as_mut().is_some_and(|req_batch| {
+                        req_batch.can_batch_batch_get(&req)
+                    }) {
+                        batcher.as_mut().unwrap().add_batch_get_request(req, id);
+                    } else {
+                       let begin_instant = Instant::now();
+                       let source = req.get_context().get_request_source().to_owned();
+                       let resp = future_batch_get(storage, req)
+                            .map_ok(oneof!(batch_commands_response::response::Cmd::BatchGet))
+                            .map_err(|e| {GRPC_MSG_FAIL_COUNTER.kv_batch_get.inc(); e});
+                        response_batch_commands_request(id, resp, tx.clone(), begin_instant, GrpcTypeKind::kv_batch_get, source, resource_group_priority);
+                    }
+                },
                 Some(batch_commands_request::request::Cmd::Coprocessor(req)) => {
                     handle_cluster_id_mismatch!(cluster_id, req);
                     let resource_control_ctx = req.get_context().get_resource_control_context();
@@ -1511,7 +1535,6 @@ fn handle_batch_commands_request<E: Engine, L: LockManager, F: KvFormat>(
         Prewrite, future_prewrite(storage), kv_prewrite;
         Commit, future_commit(storage), kv_commit;
         Cleanup, future_cleanup(storage), kv_cleanup;
-        BatchGet, future_batch_get(storage), kv_batch_get;
         BatchRollback, future_batch_rollback(storage), kv_batch_rollback;
         TxnHeartBeat, future_txn_heart_beat(storage), kv_txn_heart_beat;
         CheckTxnStatus, future_check_txn_status(storage), kv_check_txn_status;

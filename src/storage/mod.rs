@@ -84,8 +84,8 @@ use futures::{future::Either as FuturesEither, prelude::*};
 use kvproto::{
     kvrpcpb,
     kvrpcpb::{
-        ApiVersion, ChecksumAlgorithm, CommandPri, Context, GetRequest, IsolationLevel, KeyRange,
-        LockInfo, RawGetRequest,
+        ApiVersion, BatchGetRequest, ChecksumAlgorithm, CommandPri, Context, GetRequest,
+        IsolationLevel, KeyRange, LockInfo, RawGetRequest,
     },
     pdpb::QueryKind,
 };
@@ -1006,6 +1006,276 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                                         source,
                                         resource_priority,
                                     );
+                                }
+                                Err(e) => {
+                                    consumer.consume(
+                                        id,
+                                        Err(Error::from(txn::Error::from(e))),
+                                        begin_instant,
+                                        source,
+                                        resource_priority,
+                                    );
+                                }
+                            }
+                        }),
+                        Err(e) => {
+                            consumer.consume(id, Err(e), begin_instant, source, resource_priority);
+                        }
+                    }
+                }
+                metrics::tls_collect_scan_details(CMD, &statistics);
+                SCHED_HISTOGRAM_VEC_STATIC
+                    .get(CMD)
+                    .observe(command_duration.saturating_elapsed_secs());
+
+                Ok(())
+            }
+            .in_resource_metering_tag(resource_tag),
+            priority,
+            thread_rng().next_u64(),
+            metadata,
+            resource_limiter,
+        )
+    }
+
+    /// Get values of a set of keys from multiple BatchGetRequest with separate
+    /// context from a snapshot, return a list of `Result`s.
+    ///
+    /// This function batches multiple BatchGetRequest RPCs, similar to how
+    /// batch_get_command batches multiple GetRequest RPCs.
+    ///
+    /// Only writes that are committed before their respective `start_ts` are
+    /// visible.
+    pub fn batch_batch_get_command<
+        P: 'static + ResponseBatchConsumer<(Vec<Option<ValueEntry>>, Statistics)>,
+    >(
+        &self,
+        requests: Vec<BatchGetRequest>,
+        ids: Vec<u64>,
+        trackers: Vec<TrackerToken>,
+        consumer: P,
+        begin_instant: Instant,
+    ) -> impl Future<Output = Result<()>> {
+        const CMD: CommandKind = CommandKind::batch_batch_get_command;
+        // all requests in a batch have the same region, epoch, term, replica_read
+        let priority = requests[0].get_context().get_priority();
+        let metadata =
+            TaskMetadata::from_ctx(requests[0].get_context().get_resource_control_context());
+        let resource_group_name = requests[0]
+            .get_context()
+            .get_resource_control_context()
+            .get_resource_group_name();
+        let group_priority = requests[0]
+            .get_context()
+            .get_resource_control_context()
+            .get_override_priority();
+        let resource_priority = ResourcePriority::from(group_priority);
+        let resource_limiter = self.resource_manager.as_ref().and_then(|r| {
+            r.get_resource_limiter(
+                resource_group_name,
+                requests[0].get_context().get_request_source(),
+                group_priority,
+            )
+        });
+        let concurrency_manager = self.concurrency_manager.clone();
+        let api_version = self.api_version;
+        let busy_threshold =
+            Duration::from_millis(requests[0].get_context().busy_threshold_ms as u64);
+
+        // The resource tags of these batched requests are not the same, and it is quite
+        // expensive to distinguish them, so we can find random one of them as a
+        // representative.
+        let rand_index = rand::thread_rng().gen_range(0, requests.len());
+        let rand_ctx = requests[rand_index].get_context();
+        let rand_key = requests[rand_index]
+            .get_keys()
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        let resource_tag = self
+            .resource_tag_factory
+            .new_tag_with_key_ranges(rand_ctx, vec![(rand_key.clone(), rand_key)]);
+        // Unset the TLS tracker because the future below does not belong to any
+        // specific request
+        clear_tls_tracker_token();
+        self.read_pool_spawn_with_busy_check(
+            busy_threshold,
+            async move {
+                KV_COMMAND_COUNTER_VEC_STATIC.get(CMD).inc();
+                let total_keys: usize = requests.iter().map(|r| r.get_keys().len()).sum();
+                KV_COMMAND_KEYREAD_HISTOGRAM_STATIC
+                    .get(CMD)
+                    .observe(total_keys as f64);
+                let command_duration = Instant::now();
+                let read_id = Some(ThreadReadId::new());
+                let mut statistics = Statistics::default();
+                let mut req_snaps = vec![];
+
+                for ((mut req, id), tracker) in requests.into_iter().zip(ids).zip(trackers) {
+                    set_tls_tracker_token(tracker);
+                    let need_commit_ts = req.get_need_commit_ts();
+                    let mut ctx = req.take_context();
+                    let deadline = Self::get_deadline(&ctx);
+                    let source = ctx.take_request_source();
+                    let region_id = ctx.get_region_id();
+                    let peer = ctx.get_peer();
+
+                    let keys: Vec<Key> = req.get_keys().iter().map(|k| Key::from_raw(k)).collect();
+
+                    // Collect query stats for all keys in this request
+                    let mut key_ranges = vec![];
+                    for key in &keys {
+                        key_ranges.push(build_key_range(key.as_encoded(), key.as_encoded(), false));
+                    }
+                    tls_collect_query_batch(region_id, peer, key_ranges, QueryKind::Get);
+
+                    let total_key_bytes: u64 = req.get_keys().iter().map(|k| k.len() as u64).sum();
+                    record_network_in_bytes(total_key_bytes);
+
+                    for key in &keys {
+                        Self::check_api_version(
+                            api_version,
+                            ctx.api_version,
+                            CMD,
+                            [key.as_encoded()],
+                        )?;
+                    }
+
+                    let start_ts = req.get_version().into();
+                    let isolation_level = ctx.get_isolation_level();
+                    let fill_cache = !ctx.get_not_fill_cache();
+                    let bypass_locks = TsSet::vec_from_u64s(ctx.take_resolved_locks());
+                    let access_locks = TsSet::vec_from_u64s(ctx.take_committed_locks());
+
+                    let snap_ctx = match prepare_snap_ctx(
+                        &ctx,
+                        &keys,
+                        start_ts,
+                        &bypass_locks,
+                        &concurrency_manager,
+                        CMD,
+                    ) {
+                        Ok(mut snap_ctx) => {
+                            snap_ctx.read_id = if ctx.get_stale_read() {
+                                None
+                            } else {
+                                read_id.clone()
+                            };
+                            snap_ctx
+                        }
+                        Err(e) => {
+                            consumer.consume(id, Err(e), begin_instant, source, resource_priority);
+                            continue;
+                        }
+                    };
+
+                    let snap = Self::with_tls_engine(|engine| Self::snapshot(engine, snap_ctx));
+                    req_snaps.push((
+                        TlsTrackedFuture::new(snap),
+                        keys,
+                        start_ts,
+                        isolation_level,
+                        fill_cache,
+                        bypass_locks,
+                        access_locks,
+                        need_commit_ts,
+                        region_id,
+                        id,
+                        source,
+                        tracker,
+                        deadline,
+                    ));
+                }
+                Self::with_tls_engine(|engine| engine.release_snapshot());
+                for req_snap in req_snaps {
+                    let (
+                        snap,
+                        keys,
+                        start_ts,
+                        isolation_level,
+                        fill_cache,
+                        bypass_locks,
+                        access_locks,
+                        need_commit_ts,
+                        region_id,
+                        id,
+                        source,
+                        tracker,
+                        deadline,
+                    ) = req_snap;
+                    let snap_res = snap.await;
+                    if let Err(e) = deadline.check() {
+                        consumer.consume(
+                            id,
+                            Err(Error::from(e)),
+                            begin_instant,
+                            source,
+                            resource_priority,
+                        );
+                        continue;
+                    }
+
+                    set_tls_tracker_token(tracker);
+                    match snap_res {
+                        Ok(snapshot) => Self::with_perf_context(CMD, || {
+                            let buckets = snapshot.ext().get_buckets();
+                            match PointGetterBuilder::new(snapshot, start_ts)
+                                .fill_cache(fill_cache)
+                                .isolation_level(isolation_level)
+                                .bypass_locks(bypass_locks)
+                                .access_locks(access_locks)
+                                .build()
+                            {
+                                Ok(mut point_getter) => {
+                                    let mut values = Vec::with_capacity(keys.len());
+                                    let mut has_error = false;
+                                    for key in &keys {
+                                        match point_getter.get_entry(key, need_commit_ts) {
+                                            Ok(v) => values.push(v),
+                                            Err(e) => {
+                                                has_error = true;
+                                                consumer.consume(
+                                                    id,
+                                                    Err(Error::from(txn::Error::from(e))),
+                                                    begin_instant,
+                                                    source.clone(),
+                                                    resource_priority,
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if !has_error {
+                                        let stat = point_getter.take_statistics();
+                                        // Collect read flow for the key range
+                                        if let (Some(first), Some(last)) =
+                                            (keys.first(), keys.last())
+                                        {
+                                            metrics::tls_collect_read_flow(
+                                                region_id,
+                                                Some(first.as_encoded()),
+                                                Some(last.as_encoded()),
+                                                &stat,
+                                                buckets.as_ref(),
+                                            );
+                                        }
+                                        statistics.add(&stat);
+                                        let value_size: u64 = values
+                                            .iter()
+                                            .map(|v| {
+                                                v.as_ref().map_or(0, |v1| v1.value.len()) as u64
+                                            })
+                                            .sum();
+                                        record_network_out_bytes(value_size);
+                                        record_logical_read_bytes(statistics.processed_size as u64);
+                                        consumer.consume(
+                                            id,
+                                            Ok((values, stat)),
+                                            begin_instant,
+                                            source,
+                                            resource_priority,
+                                        );
+                                    }
                                 }
                                 Err(e) => {
                                     consumer.consume(

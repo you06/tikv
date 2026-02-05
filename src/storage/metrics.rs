@@ -131,6 +131,7 @@ make_auto_flush_static_metric! {
         batch_get,
         buffer_batch_get,
         batch_get_command,
+        batch_batch_get_command,
         prewrite,
         acquire_pessimistic_lock,
         acquire_pessimistic_lock_resumed,

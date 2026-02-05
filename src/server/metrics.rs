@@ -28,6 +28,7 @@ make_auto_flush_static_metric! {
         kv_cleanup,
         kv_batch_get,
         kv_batch_get_command,
+        kv_batch_batch_get_command,
         kv_batch_rollback,
         kv_txn_heart_beat,
         kv_check_txn_status,

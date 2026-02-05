@@ -147,6 +147,7 @@ pub enum RequestType {
     KvGet,
     KvBatchGet,
     KvBatchGetCommand,
+    KvBatchBatchGetCommand,
     KvScan,
     KvScanLock,
     KvPrewrite,
